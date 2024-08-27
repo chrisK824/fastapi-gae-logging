@@ -9,6 +9,10 @@ Groups logs coming from the same request lifecycle and propagates the maximum lo
 
 - **Request Logs Grouping**: Groups logs coming from the same request lifecycle to ease out log analysis using the Google Cloud Log Explorer. Grouping logger name can be customised and it defaults to the Google Cloud Project ID with '-request-logger' as a suffix.
 - **Request Maximum Log Level propagation**: Propagates the maximum log level throughout the request lifecycle to ease out log searching based on severity of an issue.
+- **Request Payload Logging** - More options to be exposed on that behaviour: 
+    - In case the request contains a payload, then this is logged into the parent log of request grouped logs
+    - For now content type of payload is assumed to be a valid JSON, otherwise it is discarded. More to be supported later on.
+    - The payload is logged as a dictionary using the `google-cloud-logging`'s method for `log_struct`. Since that method is logging only dictionaries, any JSON valid payload that is not a dictionary is wrapped into a dummy keyword to constuct one. The dummy keyword looks like that: `<original_type_of_payload>__payload_wrapper` The original or virtual dictionary is logged with `log_struct` along with the parent log of request grouped logs and ends up in field `jsonPayload`.
 
 ## API
 - Custom Cloud Logging Handler to use with official library `google-cloud-logging`: `FastAPIGAELoggingHandler`

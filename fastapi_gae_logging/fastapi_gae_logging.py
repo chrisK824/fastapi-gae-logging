@@ -3,6 +3,7 @@ import time
 import contextvars
 import os
 import re
+import json
 from typing import Optional, Dict, Any
 from fastapi import FastAPI
 from starlette.exceptions import HTTPException
@@ -119,8 +120,13 @@ class GAERequestLogger:
         if request.method in ('POST', 'PUT', 'PATCH', 'DELETE'):
             try:
                 payload = await request.json()
-            except Exception:
+            except json.JSONDecodeError:
                 pass
+
+        if not isinstance(payload, dict):
+            payload = {
+                f"{type(payload).__name__}_payload_wrapper": payload
+            }
 
         self.logger.log_struct(
             info=payload,
@@ -143,7 +149,17 @@ class FastAPIGAELoggingMiddleware:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
         if scope["type"] == "http":
-            request = Request(scope, receive=receive)
+
+            # https://stackoverflow.com/questions/64115628/get-starlette-request-body-in-the-middleware-context
+            # Mock function that returns a cached copy of the request
+            # so that anyone can ask for the body aftewards from the request object
+
+            receive_cached_ = await receive()
+
+            async def receive_cached():
+                return receive_cached_
+
+            request = Request(scope, receive=receive_cached)
 
             gae_request_context.set({
                 'trace': request.headers.get('X-Cloud-Trace-Context'),
@@ -151,9 +167,12 @@ class FastAPIGAELoggingMiddleware:
                 'max_log_level': logging.NOTSET
             })
 
+            # start with the default response in case of generic error
             response = Response(status_code=500)
 
-            async def send_wrapper(message: Dict[str, Any]) -> None:
+            # intercept the sent message to get the response status and body
+            # for later use
+            async def send_spoof_wrapper(message: Dict[str, Any]) -> None:
                 if message["type"] == "http.response.start":
                     response.status_code = message["status"]
                 elif message["type"] == "http.response.body":
@@ -161,7 +180,7 @@ class FastAPIGAELoggingMiddleware:
                 await send(message)
 
             try:
-                await self.app(scope, receive, send_wrapper)
+                await self.app(scope, receive_cached, send_spoof_wrapper)
             except Exception as e:
                 if not isinstance(e, HTTPException):
                     logging.exception(e)
