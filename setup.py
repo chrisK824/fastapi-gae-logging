@@ -14,7 +14,7 @@ setup(
     packages=find_packages(),
     install_requires=[
         "fastapi>=0.112.2",
-        "google-cloud-logging>=3.10.0",
+        "google-cloud-logging>=3.11.2",
     ],
     python_requires=">=3.7",
     license="MIT",
