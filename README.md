@@ -113,6 +113,18 @@ def post_payload(payload: Any = Body(None)):
 
 ```
 
+## How it looks in Google Cloud Log Explorer
+
+### Logger selection
+![alt text](<logger_selection.jpg>)
+
+### Groupped logs with propagated log severity to the parent log
+
+![alt text](<groupped_logs.jpg>)
+
+### Grouped logs in request with payload
+![alt text](<request_with_payload.jpg>)
+
 ## Dependencies
 This tool is built upon the following packages:
 
