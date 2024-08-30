@@ -116,14 +116,14 @@ def post_payload(payload: Any = Body(None)):
 ## How it looks in Google Cloud Log Explorer
 
 ### Logger selection
-![alt text](<logger_selection.jpg>)
+![alt text](https://github.com/chrisK824/fastapi-gae-logging/raw/main/logger_selection.jpg)
 
 ### Groupped logs with propagated log severity to the parent log
 
-![alt text](<groupped_logs.jpg>)
+![alt text](https://github.com/chrisK824/fastapi-gae-logging/raw/main/groupped_logs.jpg)
 
 ### Grouped logs in request with payload
-![alt text](<request_with_payload.jpg>)
+![alt text](https://github.com/chrisK824/fastapi-gae-logging/raw/main/request_with_payload.jpg)
 
 ## Dependencies
 This tool is built upon the following packages:
@@ -139,8 +139,3 @@ This tool is built upon the following packages:
 - **Cloud Logging**: Utilizes Google Cloud Logging to group logs by request and propagate the maximum log level, enhancing observability and troubleshooting.
 - **Structured Logging**: Parent log of the request-response lifecycle is structured and sent to Google Cloud Logging with additional context, such as the request method, URL, and user agent after the request has been processed and served.
 
-
-## Roadmap
-- Allow for opting out of the dictionary enforcement of logged payload.
-- Allow for opting out of request payload logging at all.
-- Explore other fields in Google Cloud Logs. Investigate and consider utilizing additional fields available in Google Cloud Logs that may allow for more goodies.

@@ -65,7 +65,7 @@ class GAERequestLogger:
         logging.CRITICAL: 'CRITICAL',
     }
 
-    def __init__(self, logger: Logger, resource: Resource) -> None:
+    def __init__(self, logger: Logger, resource: Resource, log_payload: bool = True) -> None:
         """
         Initialize the GAERequestLogger.
 
@@ -75,6 +75,7 @@ class GAERequestLogger:
         """
         self.logger = logger
         self.resource = resource
+        self.log_payload = log_payload
 
     def _log_level_to_severity(self, log_level: int) -> str:
         """
@@ -117,16 +118,19 @@ class GAERequestLogger:
         }
 
         payload = {}
-        if request.method in ('POST', 'PUT', 'PATCH', 'DELETE'):
+
+        if self.log_payload and request.method in {'POST', 'PUT', 'PATCH', 'DELETE'}:
             try:
                 payload = await request.json()
             except json.JSONDecodeError:
-                pass
-
-        if not isinstance(payload, dict):
-            payload = {
-                f"{type(payload).__name__}_payload_wrapper": payload
-            }
+                logging.warning("Failed to decode request payload as JSON, skipping logging.")
+            except Exception as e:
+                logging.error(f"Unexpected error while logging payload: {e}")
+            else:
+                if not isinstance(payload, dict):
+                    payload = {
+                        f"{type(payload).__name__}_payload_wrapper": payload
+                    }
 
         self.logger.log_struct(
             info=payload,
@@ -202,6 +206,7 @@ class FastAPIGAELoggingHandler(CloudLoggingHandler):
             self,
             app: FastAPI,
             request_logger_name: Optional[str] = None,
+            log_payload: bool = True,
             *args, **kwargs
     ) -> None:
         """
@@ -225,7 +230,8 @@ class FastAPIGAELoggingHandler(CloudLoggingHandler):
                     name=request_logger_name or f"{os.getenv('GOOGLE_CLOUD_PROJECT')}{self.REQUEST_LOGGER_SUFFIX}",
                     resource=self.resource
                 ),
-                resource=self.resource
+                resource=self.resource,
+                log_payload=log_payload
             )
         )
         self.addFilter(LogInterceptor())
