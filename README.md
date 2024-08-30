@@ -58,6 +58,8 @@ if os.getenv('GAE_ENV', '').startswith('standard'):
 
     client = google.cloud.logging.Client()
     gae_log_handler = FastAPIGAELoggingHandler(app=app, client=client)
+    # use the log_payload parameter if you want to opt-out from payload logging
+    # gae_log_handler = FastAPIGAELoggingHandler(app=app, client=client, log_payload=False)
     setup_logging(handler=gae_log_handler)
 
 logging.getLogger().setLevel(logging.DEBUG)

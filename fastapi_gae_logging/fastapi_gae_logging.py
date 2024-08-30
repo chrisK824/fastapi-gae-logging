@@ -216,6 +216,9 @@ class FastAPIGAELoggingHandler(CloudLoggingHandler):
             app (FastAPI): The FastAPI application instance.
             request_logger_name (Optional[str]): The name of the Cloud Logging logger to use for request logs.
                 Defaults to the Google Cloud Project ID with '-request-logger' suffix.
+            log_payload (bool): Whether to log the request payload. If True, the payload for 
+                    POST, PUT, PATCH, and DELETE requests will be logged. 
+                    Defaults to True.
             *args: Additional arguments to pass to the superclass constructor.
                 Any argument you would pass to CloudLoggingHandler.
             **kwargs: Additional keyword arguments to pass to the superclass constructor.
