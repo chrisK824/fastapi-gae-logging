@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="fastapi-gae-logging",
-    version="0.0.4",
+    version="0.0.5",
     description="Custom Cloud Logging handler for FastAPI applications deployed in Google App Engine. \
     Groups logs coming from the same request lifecycle and propagates the maximum log level \
     throughout the request lifecycle using middleware and context management.",
