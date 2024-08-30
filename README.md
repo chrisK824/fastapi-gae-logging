@@ -37,7 +37,27 @@ The `fastapi-gae-logging` module addresses these problems by:
 
 ## API
 
-- `FastAPIGAELoggingHandler` class: A custom Cloud Logging Handler for FastAPI applications to use with the official google-cloud-logging library.
+- Initialization
+
+```python
+FastAPIGAELoggingHandler(
+    app: FastAPI,
+    request_logger_name: Optional[str] = None,
+    log_payload: bool = True,
+    *args, **kwargs
+)
+```
+
+- Parameters
+    - **app** (FastAPI): The FastAPI application instance.
+    - **request_logger_name** (Optional[str], optional): The name of the Cloud Logging logger to use for request logs.
+                                                    Defaults to the Google Cloud Project ID with the suffix '-request-logger'.
+
+    - **log_payload** (bool, optional): Whether to log the request payload. If True, the payload for POST, PUT, PATCH, and DELETE requests will be logged. Defaults to True.
+
+    - ***args**: Additional arguments to pass to the superclass constructor. Any argument you would pass to CloudLoggingHandler.
+
+    - ****kwargs**: Additional keyword arguments to pass to the superclass constructor. Any keyword argument you would pass to  CloudLoggingHandler.
 
 
 ## Example of usage
