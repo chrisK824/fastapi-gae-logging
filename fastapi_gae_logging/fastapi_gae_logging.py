@@ -56,6 +56,20 @@ class LogInterceptor(logging.Filter):
 
 
 class GAERequestLogger:
+    """
+    A logger for emitting structured request logs in Google App Engine.
+
+    This logger is designed to work with FastAPI applications deployed on Google App Engine. It logs
+    structured data after each request is handled, including the HTTP request method, URL, status,
+    user agent, response size, latency, and remote IP address. The log severity is determined by the
+    maximum log level recorded during the request.
+
+    Attributes:
+        LOG_LEVEL_TO_SEVERITY (Dict[int, str]): Mapping of Python logging levels to Cloud Logging severity levels.
+        logger (Logger): The Google Cloud Logger instance to log requests.
+        resource (Resource): The Google Cloud resource associated with the logger.
+        log_payload (bool): Whether to log the request payload for certain HTTP methods. Defaults to True.
+    """
     LOG_LEVEL_TO_SEVERITY: Dict[int, str] = {
         logging.NOTSET: 'DEFAULT',
         logging.DEBUG: 'DEBUG',
@@ -72,6 +86,7 @@ class GAERequestLogger:
         Args:
             logger (Logger): The Google Cloud Logger instance to log requests.
             resource (Resource): The resource associated with the logger.
+            log_payload (bool): Whether to log the request payload for certain HTTP methods. Defaults to True.
         """
         self.logger = logger
         self.resource = resource
@@ -143,15 +158,41 @@ class GAERequestLogger:
 
 class FastAPIGAELoggingMiddleware:
     """
-    Custom middleware to set up request start time and emit logs after request completion.
-    Specifically designed for FastAPI applications deployed on Google App Engine.
+    Middleware to set up request start time and emit logs after request completion.
+
+    This middleware is specifically designed for FastAPI applications deployed on Google App Engine.
+    It records the start time of the request and then emits a log after the request is completed,
+    containing details about the request and response.
+
+    Attributes:
+    app (ASGIApp): The ASGI application instance.
+    logger (GAERequestLogger): The logger used to emit structured logs.
     """
 
     def __init__(self, app: ASGIApp, logger: GAERequestLogger):
+        """
+        Initialize the middleware.
+
+        Args:
+            app (ASGIApp): The ASGI application instance.
+            logger (GAERequestLogger): The logger instance used to log request data.
+        """
         self.app = app
         self.logger = logger
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        """
+        Middleware entry point, invoked for each request.
+
+        This method sets up the request context with trace information, start time, and initial log level.
+        It then intercepts the response to capture details for logging. In case of exceptions, they are
+        logged, and the exception is re-raised.
+
+        Args:
+            scope (Scope): The ASGI scope dictionary containing request information.
+            receive (Receive): The receive channel for incoming messages.
+            send (Send): The send channel for outgoing messages.
+        """
         if scope["type"] == "http":
 
             # https://stackoverflow.com/questions/64115628/get-starlette-request-body-in-the-middleware-context
@@ -171,10 +212,10 @@ class FastAPIGAELoggingMiddleware:
                 'max_log_level': logging.NOTSET
             })
 
-            # start with the default response in case of generic error
+            # Default response in case of an error
             response = Response(status_code=500)
 
-            # intercept the sent message to get the response status and body
+            # Intercept the sent message to get the response status and body
             # for later use
             async def send_spoof_wrapper(message: Dict[str, Any]) -> None:
                 if message["type"] == "http.response.start":
@@ -195,9 +236,11 @@ class FastAPIGAELoggingMiddleware:
 
 class FastAPIGAELoggingHandler(CloudLoggingHandler):
     """
-    Custom Cloud Logging handler for FastAPI applications deployed in Google App Engine.
-    Groups logs coming from the same request lifecycle and propagates the maximum log level
-    throughout the request lifecycle using middleware and context management.
+    Custom Cloud Logging handler for FastAPI applications deployed on Google App Engine.
+
+    This handler groups logs from the same request lifecycle and propagates the maximum log level
+    observed throughout the request. It also integrates with FastAPI by adding middleware that
+    handles request and response logging.
     """
 
     REQUEST_LOGGER_SUFFIX: str = '-request-logger'
@@ -216,9 +259,7 @@ class FastAPIGAELoggingHandler(CloudLoggingHandler):
             app (FastAPI): The FastAPI application instance.
             request_logger_name (Optional[str]): The name of the Cloud Logging logger to use for request logs.
                 Defaults to the Google Cloud Project ID with '-request-logger' suffix.
-            log_payload (bool): Whether to log the request payload. If True, the payload for 
-                    POST, PUT, PATCH, and DELETE requests will be logged. 
-                    Defaults to True.
+            log_payload (bool): Whether to log the request payload for certain HTTP methods. Defaults to True.
             *args: Additional arguments to pass to the superclass constructor.
                 Any argument you would pass to CloudLoggingHandler.
             **kwargs: Additional keyword arguments to pass to the superclass constructor.
