@@ -5,7 +5,7 @@ import os
 import re
 import json
 from typing import Optional, Dict, Any
-from fastapi import FastAPI
+from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
 from starlette.types import ASGIApp, Receive, Scope, Send
 from starlette.responses import Response
@@ -247,7 +247,7 @@ class FastAPIGAELoggingHandler(CloudLoggingHandler):
 
     def __init__(
             self,
-            app: FastAPI,
+            app: Starlette,
             request_logger_name: Optional[str] = None,
             log_payload: bool = True,
             *args, **kwargs
@@ -256,7 +256,7 @@ class FastAPIGAELoggingHandler(CloudLoggingHandler):
         Initialize the handler.
 
         Args:
-            app (FastAPI): The FastAPI application instance.
+            app (FastAPI | Starlette): The FastAPI or Starlette application instance.
             request_logger_name (Optional[str]): The name of the Cloud Logging logger to use for request logs.
                 Defaults to the Google Cloud Project ID with '-request-logger' suffix.
             log_payload (bool): Whether to log the request payload for certain HTTP methods. Defaults to True.

@@ -1,5 +1,5 @@
 # fastapi-gae-logging
-Custom Cloud Logging handler for FastAPI applications deployed in Google App Engine to ease out logs analysis and monitoring through Google Cloud Log Explorer.
+Custom Cloud Logging handler for FastAPI (or any Starlette based) applications deployed in Google App Engine to ease out logs analysis and monitoring through Google Cloud Log Explorer.
 
 ## What problem does this package solve? Why do we need this?
 When deploying FastAPI applications on Google App Engine, I encountered several challenges with logging and observability even when using the official package for this purpose, `google-cloud-logging`.
@@ -41,7 +41,7 @@ The `fastapi-gae-logging` module addresses these problems by:
 
 ```python
 FastAPIGAELoggingHandler(
-    app: FastAPI,
+    app: Starlette,
     request_logger_name: Optional[str] = None,
     log_payload: bool = True,
     *args, **kwargs
@@ -49,7 +49,7 @@ FastAPIGAELoggingHandler(
 ```
 
 - Parameters
-    - **app** (FastAPI): The FastAPI application instance.
+    - **app** (FastAPI | Starlette): The FastAPI or Starlette application instance.
     - **request_logger_name** (Optional[str], optional): The name of the Cloud Logging logger to use for request logs.
                                                     Defaults to the Google Cloud Project ID with the suffix '-request-logger'.
 
@@ -150,7 +150,7 @@ def post_payload(payload: Any = Body(None)):
 ## Dependencies
 This tool is built upon the following packages:
 
-- `fastapi`: A modern, fast (high-performance), web framework for building APIs with Python 3.7+ based on standard Python type hints.
+- `starlette`: A modern, fast (high-performance), web framework for building APIs with Python 3.7+ based on standard Python type hints.
 - `google-cloud-logging`: Google Cloud Logging API client library for logging and managing logs in Google Cloud Platform.
 
 

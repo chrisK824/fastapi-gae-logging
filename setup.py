@@ -2,8 +2,8 @@ from setuptools import setup, find_packages
 
 setup(
     name="fastapi-gae-logging",
-    version="0.0.7",
-    description="Custom Cloud Logging handler for FastAPI applications deployed in Google App Engine. \
+    version="0.0.8",
+    description="Custom Cloud Logging handler for FastAPI (or any Starlette based) applications deployed in Google App Engine. \
     Groups logs coming from the same request lifecycle and propagates the maximum log level \
     throughout the request lifecycle using middleware and context management.",
     long_description=open("README.md").read(),
@@ -13,7 +13,7 @@ setup(
     author_email="christos.karvouniaris247@gmail.com",
     packages=find_packages(),
     install_requires=[
-        "fastapi",
+        "starlette",
         "google-cloud-logging",
     ],
     python_requires=">=3.8",
