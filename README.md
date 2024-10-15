@@ -150,7 +150,7 @@ def post_payload(payload: Any = Body(None)):
 ## Dependencies
 This tool is built upon the following packages:
 
-- `starlette`: A modern, fast (high-performance), web framework for building APIs with Python 3.7+ based on standard Python type hints.
+- `starlette`: Starlette is a lightweight ASGI framework/toolkit, which is ideal for building async web services in Python. FastAPI is built on top of Starlette.
 - `google-cloud-logging`: Google Cloud Logging API client library for logging and managing logs in Google Cloud Platform.
 
 
