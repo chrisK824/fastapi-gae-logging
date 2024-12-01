@@ -29,11 +29,12 @@ The `fastapi-gae-logging` module addresses these problems by:
 
 - **Request Logs Grouping**: Groups logs from the same request lifecycle to simplify log analysis using Google Cloud Log Explorer. The logger name for grouping can be customized and defaults to the Google Cloud Project ID with '-request-logger' as a suffix.
 - **Request Maximum Log Level Propagation**: Propagates the maximum log level throughout the request lifecycle, making it easier to search logs based on the severity of an issue.
-- **Request Payload Logging**:
-    - Logs the payload of a request as part of the parent log in request-grouped logs.
-    - Assumes the payload is a valid JSON - basically what Python's `json.loads()` can parse - otherwise, it is discarded.
-    - Logs the payload as a dictionary using the `google-cloud-logging`'s `log_struct` method. If the payload is not a dictionary, then it is wrapped in a dummy keyword to construct one. The dummy keyword follows the format: `<original_type_of_payload>__payload_wrapper`. For example, if the payload is a list, which still a valid JSON which Python's `json.loads()` will parse just fine, then the payload list will be wrapped in a virtual dictionary under the key `list_payload_wrapper`. The dictionary is logged alongside the parent log in request-grouped logs and ends up in the `jsonPayload` field.
-
+- **Optional incoming request logging**: Opt in/out to log headers and payload of incoming requests into the `jsonPayload` field of the parent log.
+- **Optional request headers logging**: Defaults to True. Headers dict lands into field `request_headers` in the `jsonPayload` of parent log.
+- **Request Payload Logging**: Defaults to True. Incoming payload parsed lands into field `request_payload` in the `jsonPayload` of parent log. Parsing is based on content type with capability to override. Currenty embedded parsers for:
+    - `application/json`
+    - `application/x-www-form-urlencoded`
+    - `text/plain`
 
 ## API
 
@@ -44,6 +45,8 @@ FastAPIGAELoggingHandler(
     app: Starlette,
     request_logger_name: Optional[str] = None,
     log_payload: bool = True,
+    log_headers: bool = True,
+    custom_payload_parsers: Dict[str, Callable] = None,
     *args, **kwargs
 )
 ```
@@ -54,6 +57,9 @@ FastAPIGAELoggingHandler(
                                                     Defaults to the Google Cloud Project ID with the suffix '-request-logger'.
 
     - **log_payload** (bool, optional): Whether to log the request payload. If True, the payload for POST, PUT, PATCH, and DELETE requests will be logged. Defaults to True.
+
+    - **log_headers** (bool, optional): Whether to log the request headers. Defaults to True.
+    - **custom_payload_parsers**  (Dict[str, Callable], optional): A dictionary mapping content types to custom parser functions for logging request payloads. If provided, these will override default parsers. Defaults to None.
 
     - ***args**: Additional arguments to pass to the superclass constructor. Any argument you would pass to CloudLoggingHandler.
 
@@ -71,13 +77,30 @@ import os
 
 app = FastAPI()
 
+async def custom_payload_parser_plain_text(request: Request):
+    try:
+        body_bytes = await request.body()
+        incoming_payload = body_bytes.decode('utf-8')
+        return f"This was the original request payload: {incoming_payload}"
+    except Exception as e:
+        return f"Failed to read request payload as plain text: {e} | {traceback.format_exc()}"
+
+
+
 if os.getenv('GAE_ENV', '').startswith('standard'):
     import google.cloud.logging
     from google.cloud.logging_v2.handlers import setup_logging
     from fastapi_gae_logging import FastAPIGAELoggingHandler
 
     client = google.cloud.logging.Client()
-    gae_log_handler = FastAPIGAELoggingHandler(app=app, client=client)
+    # overriding default parsing for payload when content type is 'text/plain'
+    gae_log_handler = FastAPIGAELoggingHandler(
+        app=app,
+        client=client,
+        custom_payload_parsers={
+            "text/plain": custom_payload_parser_plain_text
+        }
+    )
     # use the log_payload parameter if you want to opt-out from payload logging
     # gae_log_handler = FastAPIGAELoggingHandler(app=app, client=client, log_payload=False)
     setup_logging(handler=gae_log_handler)

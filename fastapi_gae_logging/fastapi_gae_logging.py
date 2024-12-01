@@ -3,8 +3,7 @@ import time
 import contextvars
 import os
 import re
-import json
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Callable
 from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -12,6 +11,7 @@ from starlette.responses import Response
 from starlette.requests import Request
 from google.cloud.logging_v2.handlers import CloudLoggingHandler
 from google.cloud.logging_v2 import Resource, Logger
+import traceback
 
 
 gae_request_context = contextvars.ContextVar('gae_request_context', default={
@@ -55,6 +55,44 @@ class LogInterceptor(logging.Filter):
         return True
 
 
+class RequestPayloadParser:
+    def __init__(self, custom_parsers: Dict[str, Callable] = None):
+        self.parsers = {
+            "application/json": self._parse_json,
+            "application/x-www-form-urlencoded": self._parse_form_urlencoded,
+            "text/plain": self._parse_plain_text,
+        }
+
+        if custom_parsers:
+            self.parsers.update(custom_parsers)
+
+    async def _parse_json(self, request: Request):
+        try:
+            return await request.json()
+        except Exception as e:
+            return f"Failed to decode request payload as JSON: {e} | {traceback.format_exc()}"
+
+    async def _parse_form_urlencoded(self, request: Request):
+        try:
+            form = await request.form()
+            return dict(form)
+        except Exception as e:
+            return f"Failed to parse request form data: {e} | {traceback.format_exc()}"
+
+    async def _parse_plain_text(self, request: Request):
+        try:
+            body_bytes = await request.body()
+            return body_bytes.decode('utf-8')
+        except Exception as e:
+            return f"Failed to read request payload as plain text: {e} | {traceback.format_exc()}"
+
+    def get_parser(self, content_type: str):
+        """
+        Returns the parser function for the given content type.
+        """
+        return self.parsers.get(content_type)
+
+
 class GAERequestLogger:
     """
     A logger for emitting structured request logs in Google App Engine.
@@ -69,6 +107,10 @@ class GAERequestLogger:
         logger (Logger): The Google Cloud Logger instance to log requests.
         resource (Resource): The Google Cloud resource associated with the logger.
         log_payload (bool): Whether to log the request payload for certain HTTP methods. Defaults to True.
+        log_headers (bool): Whether to log the request headers. Defaults to True.
+        custom_payload_parsers (Dict[str, Callable], optional): A dictionary mapping content types to custom
+            parser functions for logging request payloads. If provided, these will override default parsers.
+            Defaults to None.
     """
     LOG_LEVEL_TO_SEVERITY: Dict[int, str] = {
         logging.NOTSET: 'DEFAULT',
@@ -79,7 +121,8 @@ class GAERequestLogger:
         logging.CRITICAL: 'CRITICAL',
     }
 
-    def __init__(self, logger: Logger, resource: Resource, log_payload: bool = True) -> None:
+    def __init__(self, logger: Logger, resource: Resource, log_payload: bool = True, log_headers: bool = True, 
+                 custom_payload_parsers: Dict[str, Callable] = None) -> None:
         """
         Initialize the GAERequestLogger.
 
@@ -87,10 +130,16 @@ class GAERequestLogger:
             logger (Logger): The Google Cloud Logger instance to log requests.
             resource (Resource): The resource associated with the logger.
             log_payload (bool): Whether to log the request payload for certain HTTP methods. Defaults to True.
+            log_headers (bool): Whether to log the request headers. Defaults to True.
+            custom_payload_parsers (Dict[str, Callable], optional): A dictionary mapping content types to custom
+                parser functions for logging request payloads. If provided, these will override default parsers.
+                Defaults to None.
         """
         self.logger = logger
         self.resource = resource
         self.log_payload = log_payload
+        self.log_headers = log_headers
+        self.payload_parsers = RequestPayloadParser(custom_payload_parsers)
 
     def _log_level_to_severity(self, log_level: int) -> str:
         """
@@ -132,23 +181,28 @@ class GAERequestLogger:
             'remoteIp': request.client.host
         }
 
-        payload = {}
+        logging_payload = {}
+
+        if self.log_headers:
+            logging_payload['request_headers'] = dict(request.headers)
 
         if self.log_payload and request.method in {'POST', 'PUT', 'PATCH', 'DELETE'}:
-            try:
-                payload = await request.json()
-            except json.JSONDecodeError:
-                logging.warning("Failed to decode request payload as JSON, skipping logging.")
-            except Exception as e:
-                logging.error(f"Unexpected error while logging payload: {e}")
+            content_type = request.headers.get("content-type", "").split(";")[0].strip()
+            payload_parser = self.payload_parsers.get_parser(content_type)
+
+            if not payload_parser:
+                request_payload = f"Unsupported content type {content_type}. Skipping payload logging."
             else:
-                if not isinstance(payload, dict):
-                    payload = {
-                        f"{type(payload).__name__}_payload_wrapper": payload
-                    }
+                try:
+                    request_payload = await payload_parser(request)
+                except Exception as e:
+                    request_payload = f"Parser of request payload for content type {content_type} failed: {e} | {traceback.format_exc()}"
+
+            if request_payload:
+                logging_payload['request_payload'] = request_payload
 
         self.logger.log_struct(
-            info=payload,
+            info=logging_payload,
             resource=self.resource,
             trace=f"projects/{os.environ['GOOGLE_CLOUD_PROJECT']}/traces/{trace.split('/', 1)[0]}",
             http_request=http_request,
@@ -250,6 +304,8 @@ class FastAPIGAELoggingHandler(CloudLoggingHandler):
             app: Starlette,
             request_logger_name: Optional[str] = None,
             log_payload: bool = True,
+            log_headers: bool = True,
+            custom_payload_parsers: Dict[str, Callable] = None,
             *args, **kwargs
     ) -> None:
         """
@@ -260,6 +316,10 @@ class FastAPIGAELoggingHandler(CloudLoggingHandler):
             request_logger_name (Optional[str]): The name of the Cloud Logging logger to use for request logs.
                 Defaults to the Google Cloud Project ID with '-request-logger' suffix.
             log_payload (bool): Whether to log the request payload for certain HTTP methods. Defaults to True.
+            log_headers (bool): Whether to log the request headers. Defaults to True.
+            custom_payload_parsers (Dict[str, Callable], optional): A dictionary mapping content types to custom 
+                parser functions for logging request payloads. If provided, these will override default parsers. 
+                Defaults to None.
             *args: Additional arguments to pass to the superclass constructor.
                 Any argument you would pass to CloudLoggingHandler.
             **kwargs: Additional keyword arguments to pass to the superclass constructor.
@@ -275,7 +335,9 @@ class FastAPIGAELoggingHandler(CloudLoggingHandler):
                     resource=self.resource
                 ),
                 resource=self.resource,
-                log_payload=log_payload
+                log_payload=log_payload,
+                log_headers=log_headers,
+                custom_payload_parsers=custom_payload_parsers
             )
         )
         self.addFilter(LogInterceptor())
