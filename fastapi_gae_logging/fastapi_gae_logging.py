@@ -6,7 +6,7 @@ import re
 from typing import Optional, Dict, Any, Callable
 from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Receive, Scope, Send, Message
 from starlette.responses import Response
 from starlette.requests import Request
 from google.cloud.logging_v2.handlers import CloudLoggingHandler
@@ -121,7 +121,7 @@ class GAERequestLogger:
         logging.CRITICAL: 'CRITICAL',
     }
 
-    def __init__(self, logger: Logger, resource: Resource, log_payload: bool = True, log_headers: bool = True, 
+    def __init__(self, logger: Logger, resource: Resource, log_payload: bool = True, log_headers: bool = True,
                  custom_payload_parsers: Dict[str, Callable] = None) -> None:
         """
         Initialize the GAERequestLogger.
@@ -253,12 +253,24 @@ class FastAPIGAELoggingMiddleware:
             # Mock function that returns a cached copy of the request
             # so that anyone can ask for the body aftewards from the request object
 
-            receive_cached_ = await receive()
+            done = False
+            chunks: list[bytes] = []
 
-            async def receive_cached():
-                return receive_cached_
+            # Taken from https://stackoverflow.com/a/71451740
+            async def wrapped_receive() -> Message:
+                nonlocal done
+                message = await receive()
+                if message["type"] == "http.disconnect":
+                    done = True
+                    return message
+                body = message.get("body", b"")
+                more_body = message.get("more_body", False)
+                if not more_body:
+                    done = True
+                chunks.append(body)
+                return message
 
-            request = Request(scope, receive=receive_cached)
+            request = Request(scope, receive=wrapped_receive)
 
             gae_request_context.set({
                 'trace': request.headers.get('X-Cloud-Trace-Context'),
@@ -279,7 +291,7 @@ class FastAPIGAELoggingMiddleware:
                 await send(message)
 
             try:
-                await self.app(scope, receive_cached, send_spoof_wrapper)
+                await self.app(scope, wrapped_receive, send_spoof_wrapper)
             except Exception as e:
                 if not isinstance(e, HTTPException):
                     logging.exception(e)
@@ -317,8 +329,8 @@ class FastAPIGAELoggingHandler(CloudLoggingHandler):
                 Defaults to the Google Cloud Project ID with '-request-logger' suffix.
             log_payload (bool): Whether to log the request payload for certain HTTP methods. Defaults to True.
             log_headers (bool): Whether to log the request headers. Defaults to True.
-            custom_payload_parsers (Dict[str, Callable], optional): A dictionary mapping content types to custom 
-                parser functions for logging request payloads. If provided, these will override default parsers. 
+            custom_payload_parsers (Dict[str, Callable], optional): A dictionary mapping content types to custom
+                parser functions for logging request payloads. If provided, these will override default parsers.
                 Defaults to None.
             *args: Additional arguments to pass to the superclass constructor.
                 Any argument you would pass to CloudLoggingHandler.
