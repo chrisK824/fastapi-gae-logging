@@ -250,13 +250,9 @@ class FastAPIGAELoggingMiddleware:
         if scope["type"] == "http":
 
             # https://stackoverflow.com/questions/64115628/get-starlette-request-body-in-the-middleware-context
-            # Mock function that returns a cached copy of the request
-            # so that anyone can ask for the body aftewards from the request object
-
             done = False
             chunks: list[bytes] = []
 
-            # Taken from https://stackoverflow.com/a/71451740
             async def wrapped_receive() -> Message:
                 nonlocal done
                 message = await receive()
