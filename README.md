@@ -69,11 +69,12 @@ FastAPIGAELoggingHandler(
 ## Example of usage
 
 ```python
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import HTTPException
 import logging
 import os
+import traceback
 
 app = FastAPI()
 

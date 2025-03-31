@@ -1,11 +1,21 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import HTTPException
 import logging
 import os
+import traceback
 
 
 app = FastAPI()
+
+
+async def custom_payload_parser_plain_text(request: Request):
+    try:
+        body_bytes = await request.body()
+        incoming_payload = body_bytes.decode('utf-8')
+        return f"This was the original request payload: {incoming_payload}"
+    except Exception as e:
+        return f"Failed to read request payload as plain text: {e} | {traceback.format_exc()}"
 
 
 # Init logging
@@ -15,7 +25,14 @@ if os.getenv('GAE_ENV', '').startswith('standard'):
     from fastapi_gae_logging.fastapi_gae_logging import FastAPIGAELoggingHandler
 
     client = google.cloud.logging.Client()
-    gae_log_handler = FastAPIGAELoggingHandler(app=app, client=client)
+    # overriding default parsing for payload when content type is 'text/plain'
+    gae_log_handler = FastAPIGAELoggingHandler(
+        app=app,
+        client=client,
+        custom_payload_parsers={
+            "text/plain": custom_payload_parser_plain_text
+        }
+    )
     setup_logging(handler=gae_log_handler)
 
 
