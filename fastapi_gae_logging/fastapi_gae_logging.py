@@ -1,14 +1,14 @@
 import logging
 import time
 import contextvars
-import os
 import re
 from typing import Optional, Dict, Any, Callable
 from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
-from starlette.types import ASGIApp, Receive, Scope, Send, Message
+from starlette.types import ASGIApp, Receive, Scope, Send
 from starlette.responses import Response
 from starlette.requests import Request
+from google.cloud.logging import Client
 from google.cloud.logging_v2.handlers import CloudLoggingHandler
 from google.cloud.logging_v2 import Resource, Logger
 import traceback
@@ -27,6 +27,16 @@ class LogInterceptor(logging.Filter):
     lifecycle for an ASGI app deployed in Google App Engine, using context management and trace.
     for its lifecycle in an ASGI app deployed in Google App Engine, using context management and trace.
     """
+    def __init__(self, name: str = "", project_id: str | None = None):
+        """
+        Initialize the filter.
+
+        Args:
+            name (str): Optional filter name (required by logging.Filter base).
+            project_id (str | None): Optional Google Cloud project ID to use in trace formatting.
+        """
+        super().__init__(name)
+        self.project_id = project_id
 
     def filter(self, record: logging.LogRecord) -> bool:
         """
@@ -49,7 +59,7 @@ class LogInterceptor(logging.Filter):
 
         if trace:
             split_header = trace.split('/', 1)
-            record._trace = f"projects/{os.environ['GOOGLE_CLOUD_PROJECT']}/traces/{split_header[0]}"
+            record._trace = f"projects/{self.project_id}/traces/{split_header[0]}"
             record._span_id = re.findall(r'^\w+', split_header[1])[0]
 
         return True
@@ -204,7 +214,7 @@ class GAERequestLogger:
         self.logger.log_struct(
             info=logging_payload,
             resource=self.resource,
-            trace=f"projects/{os.environ['GOOGLE_CLOUD_PROJECT']}/traces/{trace.split('/', 1)[0]}",
+            trace=f"projects/{self.logger.project}/traces/{trace.split('/', 1)[0]}",
             http_request=http_request,
             severity=severity
         )
@@ -298,6 +308,7 @@ class FastAPIGAELoggingHandler(CloudLoggingHandler):
     def __init__(
             self,
             app: Starlette,
+            client: Client,
             request_logger_name: Optional[str] = None,
             log_payload: bool = True,
             log_headers: bool = True,
@@ -321,13 +332,14 @@ class FastAPIGAELoggingHandler(CloudLoggingHandler):
             **kwargs: Additional keyword arguments to pass to the superclass constructor.
                 Any keyword argument you would pass to CloudLoggingHandler.
         """
-        super().__init__(*args, **kwargs)
+        super().__init__(client, *args, **kwargs)
         self.app = app
+        self.project_id = client.project
         self.app.add_middleware(
             middleware_class=FastAPIGAELoggingMiddleware,
             logger=GAERequestLogger(
                 logger=self.client.logger(
-                    name=request_logger_name or f"{os.getenv('GOOGLE_CLOUD_PROJECT')}{self.REQUEST_LOGGER_SUFFIX}",
+                    name=request_logger_name or f"{self.project_id}{self.REQUEST_LOGGER_SUFFIX}",
                     resource=self.resource
                 ),
                 resource=self.resource,
@@ -336,4 +348,4 @@ class FastAPIGAELoggingHandler(CloudLoggingHandler):
                 custom_payload_parsers=custom_payload_parsers
             )
         )
-        self.addFilter(LogInterceptor())
+        self.addFilter(LogInterceptor(project_id=self.project_id))
