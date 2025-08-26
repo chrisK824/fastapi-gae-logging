@@ -249,24 +249,12 @@ class FastAPIGAELoggingMiddleware:
         """
         if scope["type"] == "http":
 
-            # https://stackoverflow.com/questions/64115628/get-starlette-request-body-in-the-middleware-context
-            done = False
-            chunks: list[bytes] = []
+            _receive_cache = await receive()
 
-            async def wrapped_receive() -> Message:
-                nonlocal done
-                message = await receive()
-                if message["type"] == "http.disconnect":
-                    done = True
-                    return message
-                body = message.get("body", b"")
-                more_body = message.get("more_body", False)
-                if not more_body:
-                    done = True
-                chunks.append(body)
-                return message
+            async def receive_cache():
+                return _receive_cache
 
-            request = Request(scope, receive=wrapped_receive)
+            request = Request(scope, receive=receive_cache)
 
             gae_request_context.set({
                 'trace': request.headers.get('X-Cloud-Trace-Context'),
@@ -287,7 +275,7 @@ class FastAPIGAELoggingMiddleware:
                 await send(message)
 
             try:
-                await self.app(scope, wrapped_receive, send_spoof_wrapper)
+                await self.app(scope, receive_cache, send_spoof_wrapper)
             except Exception as e:
                 if not isinstance(e, HTTPException):
                     logging.exception(e)
