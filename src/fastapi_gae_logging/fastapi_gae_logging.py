@@ -201,8 +201,8 @@ class LogInterceptor(logging.Filter):
 
         if trace:
             split_header = trace.split('/', 1)
+            record._trace = f"projects/{self.project_id}/traces/{split_header[0]}"
             if len(split_header) > 1:
-                record._trace = f"projects/{self.project_id}/traces/{split_header[0]}"
                 record._span_id = re.findall(r'^\w+', split_header[1])[0]
 
         return True
@@ -310,16 +310,6 @@ class GAERequestLogger:
     structured data after each request is handled, including the HTTP request method, URL, status,
     user agent, response size, latency, and remote IP address. The log severity is determined by the
     maximum log level recorded during the request.
-
-    Attributes:
-        LOG_LEVEL_TO_SEVERITY (Dict[int, str]): Mapping of Python logging levels to Cloud Logging severity levels.
-        logger (Logger): The Google Cloud Logger instance to log requests.
-        resource (Resource): The Google Cloud resource associated with the logger.
-        log_payload (bool): Whether to log the request payload for certain HTTP methods. Defaults to False.
-        log_headers (bool): Whether to log the request headers. Defaults to False.
-        custom_payload_parsers (Dict[str, Callable], optional): A dictionary mapping content types to custom
-            parser functions for logging request payloads. If provided, these will override default parsers.
-            Defaults to None.
     """
     LOG_LEVEL_TO_SEVERITY: Dict[int, str] = {
         logging.NOTSET: 'DEFAULT',
@@ -331,8 +321,8 @@ class GAERequestLogger:
     }
 
     def __init__(self, logger: Logger, resource: Resource, log_payload: bool = False, log_headers: bool = False,
-                builtin_payload_parsers: Optional[List[PayloadParser.Defaults]] = None,
-                custom_payload_parsers: Optional[Dict[str, Callable]] = None) -> None:
+                 builtin_payload_parsers: Optional[List[PayloadParser.Defaults]] = None,
+                 custom_payload_parsers: Optional[Dict[str, Callable]] = None) -> None:
         """
         Initialize the GAERequestLogger.
 
@@ -341,7 +331,7 @@ class GAERequestLogger:
             resource (Resource): The resource associated with the logger.
             log_payload (bool): Whether to log the request payload for certain HTTP methods. Defaults to False.
             log_headers (bool): Whether to log the request headers. Defaults to False.
-            builtin_payload_parsers (List["PayloadParser.Defaults"], optional): A list of  built-in
+            builtin_payload_parsers (List[PayloadParser.Defaults], optional): A list of  built-in
                 parser functions for logging request payloads.
                 Defaults to None.
             custom_payload_parsers (Dict[str, Callable], optional): A dictionary mapping content types to custom
@@ -442,7 +432,6 @@ class FastAPIGAELoggingMiddleware:
         with large file uploads as this may lead to high memory consumption.
     """
 
-
     def __init__(self, app: ASGIApp, logger: GAERequestLogger):
         """
         Initialize the middleware.
@@ -524,7 +513,7 @@ class FastAPIGAELoggingHandler(CloudLoggingHandler):
             request_logger_name: Optional[str] = None,
             log_payload: bool = False,
             log_headers: bool = False,
-            builtin_payload_parsers: Optional[List["PayloadParser.Defaults"]] = None,
+            builtin_payload_parsers: Optional[List[PayloadParser.Defaults]] = None,
             custom_payload_parsers: Optional[Dict[str, Callable]] = None,
             *args, **kwargs
     ) -> None:
@@ -537,7 +526,7 @@ class FastAPIGAELoggingHandler(CloudLoggingHandler):
                 Defaults to the Google Cloud Project ID with '-request-logger' suffix.
             log_payload (bool): Whether to log the request payload for certain HTTP methods. Defaults to False.
             log_headers (bool): Whether to log the request headers. Defaults to False.
-            builtin_payload_parsers (List["PayloadParser.Defaults"], optional): A list of  built-in
+            builtin_payload_parsers (List[PayloadParser.Defaults], optional): A list of  built-in
                 parser functions for logging request payloads.
                 Defaults to None.
             custom_payload_parsers (Dict[str, Callable], optional): A dictionary mapping content types to custom
