@@ -2,10 +2,14 @@ import logging
 import time
 import contextvars
 import re
-from typing import Optional, Dict, Any, Callable
+import sys
+from enum import Enum
+from datetime import datetime
+from typing import Optional, Dict, Any, Callable, List, Awaitable
 from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
 from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.datastructures import FormData, UploadFile
 from starlette.responses import Response
 from starlette.requests import Request
 from google.cloud.logging import Client
@@ -14,18 +18,134 @@ from google.cloud.logging_v2 import Resource, Logger
 import traceback
 
 
-gae_request_context = contextvars.ContextVar('gae_request_context', default={
-    'trace': None,
-    'start_time': None,
-    'max_log_level': logging.NOTSET
-})
+GAE_REQUEST_CONTEXT: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
+    'GAE_REQUEST_CONTEXT',
+    default=None
+)
+
+
+def get_gae_context() -> Dict[str, Any]:
+    """
+    Retrieves the current GAE request context.
+    If not set (e.g., in a background thread), returns a new safe default instance.
+    """
+    ctx = GAE_REQUEST_CONTEXT.get()
+    if ctx is None:
+        return {
+            'trace': None,
+            'start_time': time.time(),
+            'max_log_level': logging.NOTSET
+        }
+    return ctx
+
+
+def bytes_repr(num, suffix='B'):
+    """Converts a byte count into a human-readable string (e.g., 1.2KB, 4.5MB)."""
+    for unit in ['', 'K', 'M', 'G', 'T', 'P', 'E', 'Z']:
+        if abs(num) < 1024.0:
+            return f"{num:3.1f}{unit}{suffix}"
+        num /= 1024.0
+    return f"{num:.1f}Yi{suffix}"
+
+
+def get_real_size(obj, seen=None):
+    """
+    Recursively finds the total memory footprint (deep size) of an object 
+    and its members in bytes.
+    """
+    size = sys.getsizeof(obj)
+    if seen is None:
+        seen = set()
+    obj_id = id(obj)
+    if obj_id in seen:
+        return 0
+
+    seen.add(obj_id)
+    if isinstance(obj, dict):
+        size += sum([get_real_size(v, seen) for v in obj.values()])
+        size += sum([get_real_size(k, seen) for k in obj.keys()])
+    elif hasattr(obj, '__dict__'):
+        size += get_real_size(obj.__dict__, seen)
+    elif hasattr(obj, '__iter__') and not isinstance(obj, (str, bytes, bytearray)):
+        size += sum([get_real_size(i, seen) for i in obj])
+    return size
+
+
+class GaeLogSizeLimitFilter(logging.Filter):
+    """
+    Logging filter to manage the log message size based on the
+    maximum log message size allowed by google cloud logging.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """
+        Filter log records based on the maximum log message size allowed by google cloud logging.
+
+        Args:
+            record (logging.LogRecord): The log record to filter.
+
+        Returns:
+            bool: True to allow the log record, False to suppress it.
+        """
+        gcloud_log_max_bytes = 1024 * 246
+        record_size = get_real_size(record.msg)
+        if record_size > gcloud_log_max_bytes:
+            logging.warning(f"Log entry with size {bytes_repr(record_size)} exceeds maximum size "
+                            f"of {bytes_repr(gcloud_log_max_bytes)}."
+                            f"Dropping logging record originated from: {record.filename}:{record.lineno}. "
+                            f"Using print instead, check stdout/stderr for print with timestamp: "
+                            f"{datetime.fromtimestamp(record.created).isoformat()}")
+
+            print(
+                f"{datetime.fromtimestamp(record.created).isoformat()} [{record.levelname}] | {record.name} | "
+                f"{record.pathname}:{record.lineno} | {record.funcName} - {record.getMessage()}\n"
+                + (
+                    f"\nException:\n{''.join(traceback.format_exception(*record.exc_info))}" if record.exc_info else "")
+            )
+
+            return False
+
+        return True
+
+
+class GaeUrlib3FullPoolFilter(logging.Filter):
+    """
+    Logging filter to suppress noisy 'Connection pool is full' warning logs
+    from Google Cloud and App Engine internal libraries.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """
+        Filter noisy 'Connection pool is full' warning logs
+        from Google Cloud and App Engine internal libraries.
+
+        Args:
+            record (logging.LogRecord): The log record to filter.
+
+        Returns:
+            bool: True to allow the log record, False to suppress it.
+        """
+        if "Connection pool is full, discarding connection: appengine.googleapis.internal" in record.getMessage():
+            return False
+
+        if "Connection pool is full, discarding connection: storage.googleapis.com" in record.getMessage():
+            return False
+
+        return True
 
 
 class LogInterceptor(logging.Filter):
     """
     Logging filter to group logs of a given request and set the maximum log level
     lifecycle for an ASGI app deployed in Google App Engine, using context management and trace.
-    for its lifecycle in an ASGI app deployed in Google App Engine, using context management and trace.
+
+    Enriches individual LogRecords with GAE-specific trace and span IDs.
+
+    This filter intercepts every log call during a request's lifecycle. It:
+    1. Extracts the current trace ID from GAE_REQUEST_CONTEXT.
+    2. Updates the max_log_level in the context (used to set parent log severity).
+    3. Injects _trace and _span_id into the record so CloudLoggingHandler
+       properly groups app logs under the request log.
     """
     def __init__(self, name: str = "", project_id: str | None = None):
         """
@@ -49,7 +169,7 @@ class LogInterceptor(logging.Filter):
             bool: True to allow the log record, False to suppress it.
         """
 
-        gae_request_context_data = gae_request_context.get()
+        gae_request_context_data = get_gae_context()
         max_log_level = gae_request_context_data['max_log_level']
 
         if record.levelno > max_log_level:
@@ -65,40 +185,90 @@ class LogInterceptor(logging.Filter):
         return True
 
 
-class RequestPayloadParser:
-    def __init__(self, custom_parsers: Dict[str, Callable] = None):
-        self.parsers = {
-            "application/json": self._parse_json,
-            "application/x-www-form-urlencoded": self._parse_form_urlencoded,
-            "text/plain": self._parse_plain_text,
+class PayloadParser:
+    """
+    Dispatcher for parsing HTTP request bodies based on Content-Type.
+
+    This class manages a registry of async parsers. It supports built-in
+    defaults for JSON, Forms, and Multipart data, while allowing developers
+    to inject custom parsing logic for proprietary media types.
+    """
+    class Defaults(Enum):
+        JSON = "application/json"
+        FORM_URLENCODED = "application/x-www-form-urlencoded"
+        MULTIPART_FORM = "multipart/form-data"
+        PLAIN_TEXT = "text/plain"
+
+    def __init__(
+        self,
+        builtin_parsers: Optional[List["PayloadParser.Defaults"]] = None,
+        custom_parsers: Optional[Dict[str, Callable[[Request], Awaitable[Any]]]] = None
+    ):
+        """
+        Initializes the parser registry.
+
+        Args:
+            builtin_parsers: List of PayloadParser.Defaults to enable.
+            custom_parsers: Mapping of mime-type strings to async parsing functions.
+        """
+        self.parsers: Dict[str, Callable[[Request], Awaitable[Any]]] = {}
+
+        self._builtin_map = {
+            self.Defaults.JSON.value: self._parse_json,
+            self.Defaults.FORM_URLENCODED.value: self._parse_form_urlencoded,
+            self.Defaults.MULTIPART_FORM.value: self._parse_multipart_form,
+            self.Defaults.PLAIN_TEXT.value: self._parse_plain_text,
         }
+
+        if builtin_parsers:
+            for default in builtin_parsers:
+                if default.value in self._builtin_map:
+                    self.parsers[default.value] = self._builtin_map[default.value]
 
         if custom_parsers:
             self.parsers.update(custom_parsers)
 
-    async def _parse_json(self, request: Request):
-        try:
-            return await request.json()
-        except Exception as e:
-            return f"Failed to decode request payload as JSON: {e} | {traceback.format_exc()}"
+    @staticmethod
+    async def _parse_json(request: Request):
+        return await request.json()
 
-    async def _parse_form_urlencoded(self, request: Request):
-        try:
-            form = await request.form()
-            return dict(form)
-        except Exception as e:
-            return f"Failed to parse request form data: {e} | {traceback.format_exc()}"
+    @staticmethod
+    async def _parse_form_urlencoded(request: Request):
+        form = await request.form()
+        return dict(form)
 
-    async def _parse_plain_text(self, request: Request):
-        try:
-            body_bytes = await request.body()
-            return body_bytes.decode('utf-8')
-        except Exception as e:
-            return f"Failed to read request payload as plain text: {e} | {traceback.format_exc()}"
+    @staticmethod
+    async def _parse_plain_text(request: Request):
+        body_bytes = await request.body()
+        return body_bytes.decode('utf-8', errors='replace')
 
-    def get_parser(self, content_type: str):
+    @staticmethod
+    async def _parse_multipart_form(request: Request) -> Dict[str, Any]:
+        form: FormData = await request.form()
+
+        form_data = {}
+        file_data = []
+
+        for key, value in form.multi_items():
+            # Robust Check: If it's a string, it's a form field.
+            # Anything else in FormData is an UploadFile-like object.
+            if isinstance(value, str):
+                form_data[key] = value
+            else:
+                file_data.append({
+                    'form_field': key,
+                    'filename': getattr(value, 'filename', 'unknown'),
+                    'content_type': getattr(value, 'content_type', 'unknown'),
+                })
+
+        return {
+            'form_data': form_data,
+            'file_data': file_data
+        }
+
+    def get_parser(self, content_type: str) -> Optional[Callable[[Request], Awaitable[Any]]]:
         """
-        Returns the parser function for the given content type.
+        Returns the async parser function for the given content type.
         """
         return self.parsers.get(content_type)
 
@@ -132,6 +302,7 @@ class GAERequestLogger:
     }
 
     def __init__(self, logger: Logger, resource: Resource, log_payload: bool = True, log_headers: bool = True,
+                 builtin_payload_parsers: Optional[List[PayloadParser.Defaults]] = None,
                  custom_payload_parsers: Dict[str, Callable] = None) -> None:
         """
         Initialize the GAERequestLogger.
@@ -149,7 +320,10 @@ class GAERequestLogger:
         self.resource = resource
         self.log_payload = log_payload
         self.log_headers = log_headers
-        self.payload_parsers = RequestPayloadParser(custom_payload_parsers)
+        self.payload_parsers = PayloadParser(
+            builtin_parsers=builtin_payload_parsers,
+            custom_parsers=custom_payload_parsers
+        )
 
     def _log_level_to_severity(self, log_level: int) -> str:
         """
@@ -173,7 +347,7 @@ class GAERequestLogger:
             request: The request object.
             response: The response object.
         """
-        gae_request_context_data = gae_request_context.get()
+        gae_request_context_data = get_gae_context()
         trace = gae_request_context_data['trace']
 
         if not trace:
@@ -206,7 +380,8 @@ class GAERequestLogger:
                 try:
                     request_payload = await payload_parser(request)
                 except Exception as e:
-                    request_payload = f"Parser of request payload for content type {content_type} failed: {e} | {traceback.format_exc()}"
+                    request_payload = (f"Parser of request payload for "
+                                       f"content type {content_type} failed: {e} | {traceback.format_exc()}")
 
             if request_payload:
                 logging_payload['request_payload'] = request_payload
@@ -222,11 +397,15 @@ class GAERequestLogger:
 
 class FastAPIGAELoggingMiddleware:
     """
-    Middleware to set up request start time and emit logs after request completion.
+    ASGI Middleware for request-response correlation and automated logging.
 
-    This middleware is specifically designed for FastAPI applications deployed on Google App Engine.
-    It records the start time of the request and then emits a log after the request is completed,
-    containing details about the request and response.
+    Maintains the GAE_REQUEST_CONTEXT and ensures a structured log
+    is emitted even if the application encounters an unhandled exception.
+
+    Note:
+        This middleware caches the request body in memory to allow both the
+        logger and the application to read the stream. This may impact memory
+        usage for very large uploads.
 
     Attributes:
     app (ASGIApp): The ASGI application instance.
@@ -257,41 +436,46 @@ class FastAPIGAELoggingMiddleware:
             receive (Receive): The receive channel for incoming messages.
             send (Send): The send channel for outgoing messages.
         """
-        if scope["type"] == "http":
 
-            _receive_cache = await receive()
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
 
-            async def receive_cache():
-                return _receive_cache
+        headers = dict(scope.get("headers", []))
+        trace_header = headers.get(b"x-cloud-trace-context", b"").decode("latin-1") or None
 
-            request = Request(scope, receive=receive_cache)
+        GAE_REQUEST_CONTEXT.set({
+            'trace': trace_header,
+            'start_time': time.time(),
+            'max_log_level': logging.NOTSET
+        })
 
-            gae_request_context.set({
-                'trace': request.headers.get('X-Cloud-Trace-Context'),
-                'start_time': time.time(),
-                'max_log_level': logging.NOTSET
-            })
+        _receive_cache = await receive()
 
-            # Default response in case of an error
-            response = Response(status_code=500)
+        async def receive_cache():
+            return _receive_cache
 
-            # Intercept the sent message to get the response status and body
-            # for later use
-            async def send_spoof_wrapper(message: Dict[str, Any]) -> None:
-                if message["type"] == "http.response.start":
-                    response.status_code = message["status"]
-                elif message["type"] == "http.response.body":
-                    response.body = message.get("body", b"")
-                await send(message)
+        request = Request(scope, receive=receive_cache)
+        # Default response in case of an error
+        response = Response(status_code=500)
 
-            try:
-                await self.app(scope, receive_cache, send_spoof_wrapper)
-            except Exception as e:
-                if not isinstance(e, HTTPException):
-                    logging.exception(e)
-                raise e
-            finally:
-                await self.logger.emit_request_log(request, response)
+        # Intercept the sent message to get the response status and body
+        # for later use
+        async def send_spoof_wrapper(message: Dict[str, Any]) -> None:
+            if message["type"] == "http.response.start":
+                response.status_code = message["status"]
+            elif message["type"] == "http.response.body":
+                response.body = message.get("body", b"")
+            await send(message)
+
+        try:
+            await self.app(scope, receive_cache, send_spoof_wrapper)
+        except Exception as e:
+            if not isinstance(e, HTTPException):
+                logging.exception(e)
+            raise e
+        finally:
+            await self.logger.emit_request_log(request, response)
 
 
 class FastAPIGAELoggingHandler(CloudLoggingHandler):
@@ -312,6 +496,7 @@ class FastAPIGAELoggingHandler(CloudLoggingHandler):
             request_logger_name: Optional[str] = None,
             log_payload: bool = True,
             log_headers: bool = True,
+            builtin_payload_parsers: Optional[List["PayloadParser.Defaults"]] = None,
             custom_payload_parsers: Dict[str, Callable] = None,
             *args, **kwargs
     ) -> None:
@@ -345,6 +530,7 @@ class FastAPIGAELoggingHandler(CloudLoggingHandler):
                 resource=self.resource,
                 log_payload=log_payload,
                 log_headers=log_headers,
+                builtin_payload_parsers=builtin_payload_parsers,
                 custom_payload_parsers=custom_payload_parsers
             )
         )

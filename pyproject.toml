@@ -1,0 +1,49 @@
+[build-system]
+requires = ["uv_build>=0.9.17,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.setuptools]
+packages = ["fastapi_gae_logging"]
+
+[project]
+name = "fastapi-gae-logging"
+version = "0.1.0"
+description = "Custom Cloud Logging handler for FastAPI (or any Starlette based) applications deployed in Google App Engine. Groups logs coming from the same request lifecycle and propagates the maximum log level throughout the request lifecycle using middleware and context management."
+readme = "README.md"
+authors = [
+    { name = "Chris Karvouniaris", email = "christos.karvouniaris247@gmail.com" }
+]
+license = { text = "MIT" }
+requires-python = ">=3.9"
+dependencies = [
+    "google-cloud-logging>=3.13.0",
+    "starlette>=0.49.3",
+]
+
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "License :: OSI Approved :: MIT License",
+]
+
+[project.urls]
+Homepage = "https://github.com/chrisK824/fastapi-gae-logging"
+
+[dependency-groups]
+dev = [
+    "fastapi>=0.128.0",
+    "httpx>=0.28.1",
+    "isort>=6.1.0",
+    "ruff>=0.14.10",
+]
+
+[tool.ruff]
+line-length = 127
+target-version = "py38"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "C90"]
+ignore = []
+
+[tool.ruff.lint.mccabe]
+max-complexity = 20

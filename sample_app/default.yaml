@@ -1,0 +1,8 @@
+service: default
+entrypoint: uvicorn main:app --host 0.0.0.0 --port 8080
+runtime: python312
+instance_class: F1
+
+automatic_scaling:
+  min_instances: 0
+  max_instances: 1

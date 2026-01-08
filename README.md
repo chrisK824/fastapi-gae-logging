@@ -69,92 +69,165 @@ FastAPIGAELoggingHandler(
 ## Example of usage
 
 ```python
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
-from fastapi.exceptions import HTTPException
 import logging
 import os
-import traceback
+
+from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi.exceptions import HTTPException
+from fastapi.responses import JSONResponse
 
 app = FastAPI()
 
+
 async def custom_payload_parser_plain_text(request: Request):
-    try:
-        body_bytes = await request.body()
-        incoming_payload = body_bytes.decode('utf-8')
-        return f"This was the original request payload: {incoming_payload}"
-    except Exception as e:
-        return f"Failed to read request payload as plain text: {e} | {traceback.format_exc()}"
+    # Custom parser for text/plain to demonstrate GAE handler extensibility.
+    # Needs to return a serializable value to be logged
+    body_bytes = await request.body()
+    incoming_payload = body_bytes.decode('utf-8')
+    return f"Parsed Plain Text: {incoming_payload}"
 
 
-
+# Initialize GAE Logging
 if os.getenv('GAE_ENV', '').startswith('standard'):
     import google.cloud.logging
     from google.cloud.logging_v2.handlers import setup_logging
-    from fastapi_gae_logging import FastAPIGAELoggingHandler
+
+    from fastapi_gae_logging import (
+        FastAPIGAELoggingHandler,
+        GaeLogSizeLimitFilter,
+        GaeUrlib3FullPoolFilter,
+        PayloadParser,
+    )
 
     client = google.cloud.logging.Client()
-    # overriding default parsing for payload when content type is 'text/plain'
     gae_log_handler = FastAPIGAELoggingHandler(
         app=app,
         client=client,
+        # Optional - opt in for logging payload and logs; defaults are False
+        log_headers=True,
+        log_payload=True,
+        # Optional - opt in for all built in payload parsers; applicable only if log_payload is set True
+        builtin_payload_parsers=[content_type for content_type in PayloadParser.Defaults],
+        # Optional - override built in payload parsers or provide more; applicable only if log_payload is set True
         custom_payload_parsers={
             "text/plain": custom_payload_parser_plain_text
         }
     )
-    # use the log_payload parameter if you want to opt-out from payload logging
-    # gae_log_handler = FastAPIGAELoggingHandler(app=app, client=client, log_payload=False)
     setup_logging(handler=gae_log_handler)
+    # Optional - add extra filters for the logger
+    gae_log_handler.addFilter(GaeLogSizeLimitFilter())
+    gae_log_handler.addFilter(GaeUrlib3FullPoolFilter())
+
 
 logging.getLogger().setLevel(logging.DEBUG)
 
+
 @app.get("/info")
 def info():
-    logging.debug("this is a debug")
-    logging.info("this is an info")
+    logging.debug("Step 1: Debugging diagnostic")
+    logging.info("Step 2: General information log")
     return JSONResponse(
-        content={"message": "info"}
+        content={
+            "message": "info"
+        }
     )
+
 
 @app.get("/warning")
 async def warning():
-    logging.debug("this is a debug")
-    logging.info("this is an info")
-    logging.warning("this is a warning")
+    logging.debug("Step 1: Check system state")
+    logging.info("Step 2: State is normal")
+    logging.warning("Step 3: Resource usage approaching threshold")
     return JSONResponse(
-        content={"message": "warning"}
+        content={
+            "message": "warning"
+        }
     )
+
 
 @app.get("/error")
 def error():
-    logging.debug("this is a debug")
-    logging.info("this is an info")
-    logging.warning("this is a warning")
-    logging.error("this is an error")
+    logging.debug("Step 1: Internal check")
+    logging.info("Step 2: Transaction started")
+    logging.warning("Step 3: Retry attempted")
+    logging.error("Step 4: Transaction failed after retries")
     return JSONResponse(
-        content={"message": "error"}
+        content={
+            "message": "error"
+        }
     )
+
 
 @app.get("/exception")
 def exception():
-    logging.debug("this is a debug")
-    logging.info("this is an info")
-    logging.error("this is an error")
-    raise ValueError("This is a value error")
+    logging.debug("Step 1: Preparing logic")
+    logging.info("Step 2: Executing risky operation")
+    logging.error("Step 3: Critical failure detected")
+    raise ValueError("Simulated ValueError for GAE grouping demonstration")
+
 
 @app.get("/http_exception")
 def http_exception():
-    logging.debug("this is a debug")
-    logging.info("this is an info")
+    logging.debug("Step 1: Looking up resource")
+    logging.info("Step 2: Resource ID not found in database")
     raise HTTPException(
         status_code=404,
-        detail={"error": "Resource not found"}
+        detail={
+            "error": "Resource not found"
+        }
     )
 
+
 @app.post("/post_payload")
-def post_payload(payload: Any = Body(None)):
-    logging.debug("this is an debug")
-    logging.info(payload)
+async def post_payload(request: Request):
+    content_type = request.headers.get("content-type", "")
+    logging.debug(f"Handling POST request with Content-Type: {content_type}")
+
+    payload = None
+
+    # 1. Handle JSON
+    if "application/json" in content_type:
+        try:
+            payload = await request.json()
+            logging.info(f"Parsed as JSON: {payload}")
+        except Exception:
+            logging.warning("Failed to parse body as JSON")
+            payload = None
+
+    # 2. Handle Form URL-Encoded
+    elif "application/x-www-form-urlencoded" in content_type:
+        form_data = await request.form()
+        payload = dict(form_data)
+        logging.info(f"Parsed as Form URL-Encoded: {payload}")
+
+    # 3. Fallback for Plain Text or others
+    else:
+        body_bytes = await request.body()
+        payload = body_bytes.decode("utf-8", errors="replace")
+        logging.info(f"Parsed as Raw/Text: {payload}")
+
+    return JSONResponse(
+        content={
+            "mirror_response": payload,
+            "detected_type": str(type(payload)),
+            "content_type_received": content_type
+        },
+        status_code=200
+    )
+
+
+@app.post("/post_form")
+async def post_form(description: str = Form(...), file: UploadFile = File(...)):  # noqa: B008
+    file_content = await file.read()
+    
+    payload = {
+        "description": description,
+        "file_name": file.filename,
+        "content_type": file.content_type,
+        "file_size": len(file_content),
+    }
+    
+    logging.info(f"Form submission processed: {payload}")
     return JSONResponse(content={"mirror_response": payload}, status_code=200)
 
 ```
@@ -185,3 +258,10 @@ This tool is built upon the following packages:
 - **Cloud Logging**: Utilizes Google Cloud Logging to group logs by request and propagate the maximum log level, enhancing observability and troubleshooting.
 - **Structured Logging**: Parent log of the request-response lifecycle is structured and sent to Google Cloud Logging with additional context, such as the request method, URL, and user agent after the request has been processed and served.
 
+
+### Dev
+- `uv sync --all-packages`
+- Use `sample_app` folder for minimal Appengine app deployment of fastapi app that uses the local library src code via symlink.
+    - If symlink is broken for any reason, create it again from inside the `dev` folder: `ln -s ../src/fastapi_gae_logging/ .`
+    - Deploy the app: `gcloud app deploy  --version=v1 default.yaml --project=<PROJECT_ID> --account <ACCOUNT_EMAIL>`
+    - Ping the sample app to generate logs for various cases in log explorer: `python3.12 ping_endpoints.py --project <PROJECT_ID>`

@@ -3,74 +3,57 @@ name: CI/CD
 on:
   push:
     branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
   release:
-    types: 
-      - published
+    types: [published]
+  workflow_dispatch: # Allows manual triggering
 
 jobs:
-  linting:
-    name: CI against Python versions
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12"]
-
-    steps:
-    - uses: actions/checkout@v6
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v6
-      with:
-        python-version: ${{ matrix.python-version }}
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        python -m pip install flake8 pytest
-    - name: Lint with flake8
-      run: |
-        # stop the build if there are Python syntax errors or undefined names
-        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-        # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
-        flake8 . --count --exit-zero --max-complexity=20 --max-line-length=127 --statistics
+  quality:
+      name: Lint with Ruff
+      runs-on: ubuntu-latest
+      steps:
+        - uses: actions/checkout@v6
+        - name: Install uv
+          uses: astral-sh/setup-uv@v7
+          with:
+            enable-cache: true
+        - name: Run Ruff
+          run: uvx ruff check --output-format=github .
 
   build:
-    name: Build Python Package
-    needs:
-    - linting
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v6
-    - name: Install pypa/build
-      run: >-
-        python3 -m
-        pip install
-        build
-        --user
-    - name: Build a binary wheel and a source tarball
-      run: python3 -m build
-    - name: Store the distribution packages
-      uses: actions/upload-artifact@v6
-      with:
-        name: fastapi-gae-logging
-        path: dist/
+      name: Build Package
+      needs: quality
+      runs-on: ubuntu-latest
+      steps:
+        - uses: actions/checkout@v6
+        - name: Install uv
+          uses: astral-sh/setup-uv@v7
+          with:
+            enable-cache: true
+        - name: Build
+          run: uv build
+        - name: Store artifacts
+          uses: actions/upload-artifact@v6
+          with:
+            name: dist-artifacts
+            path: dist/
 
   publish-to-pypi:
-    name: Publish package to PyPI
+    name: Publish to PyPI
     if: github.event_name == 'release' && github.event.action == 'published'
-    needs:
-    - build
+    needs: build
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/p/fastapi-gae-logging
     permissions:
       id-token: write
-
     steps:
       - name: Download all the dists
         uses: actions/download-artifact@v7
         with:
-          name: fastapi-gae-logging
+          name: dist-artifacts
           path: dist/
       - name: Publish distribution 📦 to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
