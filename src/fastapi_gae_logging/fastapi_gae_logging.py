@@ -1,22 +1,22 @@
-import logging
-import time
 import contextvars
+import logging
 import re
 import sys
-from enum import Enum
-from datetime import datetime
-from typing import Optional, Dict, Any, Callable, List, Awaitable
-from starlette.applications import Starlette
-from starlette.exceptions import HTTPException
-from starlette.types import ASGIApp, Receive, Scope, Send
-from starlette.datastructures import FormData, UploadFile
-from starlette.responses import Response
-from starlette.requests import Request
-from google.cloud.logging import Client
-from google.cloud.logging_v2.handlers import CloudLoggingHandler
-from google.cloud.logging_v2 import Resource, Logger
+import time
 import traceback
+from datetime import datetime
+from enum import Enum
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
+from google.cloud.logging import Client
+from google.cloud.logging_v2 import Logger, Resource
+from google.cloud.logging_v2.handlers import CloudLoggingHandler
+from starlette.applications import Starlette
+from starlette.datastructures import FormData
+from starlette.exceptions import HTTPException
+from starlette.requests import Request
+from starlette.responses import Response
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 GAE_REQUEST_CONTEXT: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
     'GAE_REQUEST_CONTEXT',
@@ -27,7 +27,10 @@ GAE_REQUEST_CONTEXT: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextv
 def get_gae_context() -> Dict[str, Any]:
     """
     Retrieves the current GAE request context.
-    If not set (e.g., in a background thread), returns a new safe default instance.
+
+    If the context is not set (e.g., running in a background thread or outside
+    the request lifecycle), this returns a new, safe default instance to prevent
+    Key
     """
     ctx = GAE_REQUEST_CONTEXT.get()
     if ctx is None:
@@ -40,7 +43,16 @@ def get_gae_context() -> Dict[str, Any]:
 
 
 def bytes_repr(num, suffix='B'):
-    """Converts a byte count into a human-readable string (e.g., 1.2KB, 4.5MB)."""
+    """
+    Converts a byte count into a human-readable string.
+
+    Args:
+        num (float): The number of bytes.
+        suffix (str): The suffix for the unit (default 'B').
+
+    Returns:
+        str: A formatted string like '1.2KB' or '4.5MB'.
+    """
     for unit in ['', 'K', 'M', 'G', 'T', 'P', 'E', 'Z']:
         if abs(num) < 1024.0:
             return f"{num:3.1f}{unit}{suffix}"
@@ -50,8 +62,14 @@ def bytes_repr(num, suffix='B'):
 
 def get_real_size(obj, seen=None):
     """
-    Recursively finds the total memory footprint (deep size) of an object 
-    and its members in bytes.
+    Recursively calculates the deep memory footprint of an object.
+
+    Args:
+        obj (Any): The object to analyze.
+        seen (Optional[set]): A set of object IDs already processed to handle recursion.
+
+    Returns:
+        int: The total size in bytes.
     """
     size = sys.getsizeof(obj)
     if seen is None:
@@ -73,19 +91,22 @@ def get_real_size(obj, seen=None):
 
 class GaeLogSizeLimitFilter(logging.Filter):
     """
-    Logging filter to manage the log message size based on the
-    maximum log message size allowed by google cloud logging.
+    Filter to prevent logs from exceeding Google Cloud's size limits.
+
+    Google Cloud Logging has a limit (approx. 256KB) for individual log entries.
+    This filter suppresses the structured log if it exceeds the limit and prints
+    it to stdout instead to preserve the data.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
         """
-        Filter log records based on the maximum log message size allowed by google cloud logging.
+        Evaluates if a log record is within the allowed byte size.
 
         Args:
-            record (logging.LogRecord): The log record to filter.
+            record (logging.LogRecord): The log record to check.
 
         Returns:
-            bool: True to allow the log record, False to suppress it.
+            bool: True if safe to log, False if dropped (and printed to stdout).
         """
         gcloud_log_max_bytes = 1024 * 246
         record_size = get_real_size(record.msg)
@@ -110,20 +131,21 @@ class GaeLogSizeLimitFilter(logging.Filter):
 
 class GaeUrlib3FullPoolFilter(logging.Filter):
     """
-    Logging filter to suppress noisy 'Connection pool is full' warning logs
-    from Google Cloud and App Engine internal libraries.
+    Filter to suppress noisy 'Connection pool is full' warnings.
+
+    These warnings often originate from Google Cloud internal libraries
+    (like storage or firestore) and can flood logs unnecessarily.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
         """
-        Filter noisy 'Connection pool is full' warning logs
-        from Google Cloud and App Engine internal libraries.
+        Checks if the log record matches known noisy patterns.
 
         Args:
-            record (logging.LogRecord): The log record to filter.
+            record (logging.LogRecord): The log record.
 
         Returns:
-            bool: True to allow the log record, False to suppress it.
+            bool: False if the record should be suppressed, True otherwise.
         """
         if "Connection pool is full, discarding connection: appengine.googleapis.internal" in record.getMessage():
             return False
@@ -179,8 +201,9 @@ class LogInterceptor(logging.Filter):
 
         if trace:
             split_header = trace.split('/', 1)
-            record._trace = f"projects/{self.project_id}/traces/{split_header[0]}"
-            record._span_id = re.findall(r'^\w+', split_header[1])[0]
+            if len(split_header) > 1:
+                record._trace = f"projects/{self.project_id}/traces/{split_header[0]}"
+                record._span_id = re.findall(r'^\w+', split_header[1])[0]
 
         return True
 
@@ -208,8 +231,8 @@ class PayloadParser:
         Initializes the parser registry.
 
         Args:
-            builtin_parsers: List of PayloadParser.Defaults to enable.
-            custom_parsers: Mapping of mime-type strings to async parsing functions.
+            builtin_parsers: List of default parsers to enable.
+            custom_parsers: Dictionary mapping mime-types to async parser functions.
         """
         self.parsers: Dict[str, Callable[[Request], Awaitable[Any]]] = {}
 
@@ -229,16 +252,16 @@ class PayloadParser:
             self.parsers.update(custom_parsers)
 
     @staticmethod
-    async def _parse_json(request: Request):
+    async def _parse_json(request: Request) -> Any:
         return await request.json()
 
     @staticmethod
-    async def _parse_form_urlencoded(request: Request):
+    async def _parse_form_urlencoded(request: Request) -> Dict[str, Any]:
         form = await request.form()
         return dict(form)
 
     @staticmethod
-    async def _parse_plain_text(request: Request):
+    async def _parse_plain_text(request: Request) -> str:
         body_bytes = await request.body()
         return body_bytes.decode('utf-8', errors='replace')
 
@@ -269,6 +292,12 @@ class PayloadParser:
     def get_parser(self, content_type: str) -> Optional[Callable[[Request], Awaitable[Any]]]:
         """
         Returns the async parser function for the given content type.
+
+        Args:
+            content_type (str): The MIME type (e.g., 'application/json').
+
+        Returns:
+            Optional[Callable]: The parser function or None if not found.
         """
         return self.parsers.get(content_type)
 
@@ -286,8 +315,8 @@ class GAERequestLogger:
         LOG_LEVEL_TO_SEVERITY (Dict[int, str]): Mapping of Python logging levels to Cloud Logging severity levels.
         logger (Logger): The Google Cloud Logger instance to log requests.
         resource (Resource): The Google Cloud resource associated with the logger.
-        log_payload (bool): Whether to log the request payload for certain HTTP methods. Defaults to True.
-        log_headers (bool): Whether to log the request headers. Defaults to True.
+        log_payload (bool): Whether to log the request payload for certain HTTP methods. Defaults to False.
+        log_headers (bool): Whether to log the request headers. Defaults to False.
         custom_payload_parsers (Dict[str, Callable], optional): A dictionary mapping content types to custom
             parser functions for logging request payloads. If provided, these will override default parsers.
             Defaults to None.
@@ -301,17 +330,20 @@ class GAERequestLogger:
         logging.CRITICAL: 'CRITICAL',
     }
 
-    def __init__(self, logger: Logger, resource: Resource, log_payload: bool = True, log_headers: bool = True,
-                 builtin_payload_parsers: Optional[List[PayloadParser.Defaults]] = None,
-                 custom_payload_parsers: Dict[str, Callable] = None) -> None:
+    def __init__(self, logger: Logger, resource: Resource, log_payload: bool = False, log_headers: bool = False,
+                builtin_payload_parsers: Optional[List[PayloadParser.Defaults]] = None,
+                custom_payload_parsers: Optional[Dict[str, Callable]] = None) -> None:
         """
         Initialize the GAERequestLogger.
 
         Args:
             logger (Logger): The Google Cloud Logger instance to log requests.
             resource (Resource): The resource associated with the logger.
-            log_payload (bool): Whether to log the request payload for certain HTTP methods. Defaults to True.
-            log_headers (bool): Whether to log the request headers. Defaults to True.
+            log_payload (bool): Whether to log the request payload for certain HTTP methods. Defaults to False.
+            log_headers (bool): Whether to log the request headers. Defaults to False.
+            builtin_payload_parsers (List["PayloadParser.Defaults"], optional): A list of  built-in
+                parser functions for logging request payloads.
+                Defaults to None.
             custom_payload_parsers (Dict[str, Callable], optional): A dictionary mapping content types to custom
                 parser functions for logging request payloads. If provided, these will override default parsers.
                 Defaults to None.
@@ -362,7 +394,7 @@ class GAERequestLogger:
             'userAgent': request.headers.get('User-Agent'),
             'responseSize': response.headers.get('Content-Length'),
             'latency': f'{(time.time() - gae_request_context_data["start_time"]):.6f}s',
-            'remoteIp': request.client.host
+            'remoteIp': request.client.host if request.client else None
         }
 
         logging_payload = {}
@@ -399,18 +431,17 @@ class FastAPIGAELoggingMiddleware:
     """
     ASGI Middleware for request-response correlation and automated logging.
 
-    Maintains the GAE_REQUEST_CONTEXT and ensures a structured log
-    is emitted even if the application encounters an unhandled exception.
+    This middleware:
+    1. Initializes the GAE_REQUEST_CONTEXT at the start of a request.
+    2. Caches the request body (allowing multiple reads).
+    3. Intercepts the response to capture status code and body.
+    4. Triggers the final request log emission.
 
     Note:
-        This middleware caches the request body in memory to allow both the
-        logger and the application to read the stream. This may impact memory
-        usage for very large uploads.
-
-    Attributes:
-    app (ASGIApp): The ASGI application instance.
-    logger (GAERequestLogger): The logger used to emit structured logs.
+        This middleware caches the entire request body in memory. Use caution
+        with large file uploads as this may lead to high memory consumption.
     """
+
 
     def __init__(self, app: ASGIApp, logger: GAERequestLogger):
         """
@@ -456,11 +487,8 @@ class FastAPIGAELoggingMiddleware:
             return _receive_cache
 
         request = Request(scope, receive=receive_cache)
-        # Default response in case of an error
         response = Response(status_code=500)
 
-        # Intercept the sent message to get the response status and body
-        # for later use
         async def send_spoof_wrapper(message: Dict[str, Any]) -> None:
             if message["type"] == "http.response.start":
                 response.status_code = message["status"]
@@ -494,10 +522,10 @@ class FastAPIGAELoggingHandler(CloudLoggingHandler):
             app: Starlette,
             client: Client,
             request_logger_name: Optional[str] = None,
-            log_payload: bool = True,
-            log_headers: bool = True,
+            log_payload: bool = False,
+            log_headers: bool = False,
             builtin_payload_parsers: Optional[List["PayloadParser.Defaults"]] = None,
-            custom_payload_parsers: Dict[str, Callable] = None,
+            custom_payload_parsers: Optional[Dict[str, Callable]] = None,
             *args, **kwargs
     ) -> None:
         """
@@ -507,8 +535,11 @@ class FastAPIGAELoggingHandler(CloudLoggingHandler):
             app (FastAPI | Starlette): The FastAPI or Starlette application instance.
             request_logger_name (Optional[str]): The name of the Cloud Logging logger to use for request logs.
                 Defaults to the Google Cloud Project ID with '-request-logger' suffix.
-            log_payload (bool): Whether to log the request payload for certain HTTP methods. Defaults to True.
-            log_headers (bool): Whether to log the request headers. Defaults to True.
+            log_payload (bool): Whether to log the request payload for certain HTTP methods. Defaults to False.
+            log_headers (bool): Whether to log the request headers. Defaults to False.
+            builtin_payload_parsers (List["PayloadParser.Defaults"], optional): A list of  built-in
+                parser functions for logging request payloads.
+                Defaults to None.
             custom_payload_parsers (Dict[str, Callable], optional): A dictionary mapping content types to custom
                 parser functions for logging request payloads. If provided, these will override default parsers.
                 Defaults to None.
