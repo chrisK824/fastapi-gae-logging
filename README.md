@@ -162,14 +162,14 @@ def post_payload(payload: Any = Body(None)):
 ## How it looks in Google Cloud Log Explorer
 
 ### Logger selection
-![alt text](https://github.com/chrisK824/fastapi-gae-logging/raw/main/logger_selection.jpg)
+![alt text](https://github.com/chrisK824/fastapi-gae-logging/blob/main/images/logger_selection.jpg?raw=true)
 
 ### Groupped logs with propagated log severity to the parent log
 
-![alt text](https://github.com/chrisK824/fastapi-gae-logging/raw/main/groupped_logs.jpg)
+![alt text](https://github.com/chrisK824/fastapi-gae-logging/blob/main/images/groupped_logs.jpg?raw=true)
 
 ### Grouped logs in request with payload
-![alt text](https://github.com/chrisK824/fastapi-gae-logging/raw/main/request_with_payload.jpg)
+![alt text](https://github.com/chrisK824/fastapi-gae-logging/blob/main/images/request_with_payload.jpg?raw=true)
 
 ## Dependencies
 This tool is built upon the following packages:
