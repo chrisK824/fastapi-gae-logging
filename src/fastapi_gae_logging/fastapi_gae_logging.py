@@ -273,8 +273,6 @@ class PayloadParser:
         file_data = []
 
         for key, value in form.multi_items():
-            # Robust Check: If it's a string, it's a form field.
-            # Anything else in FormData is an UploadFile-like object.
             if isinstance(value, str):
                 form_data[key] = value
             else:
@@ -481,8 +479,6 @@ class FastAPIGAELoggingMiddleware:
         async def send_spoof_wrapper(message: Dict[str, Any]) -> None:
             if message["type"] == "http.response.start":
                 response.status_code = message["status"]
-            elif message["type"] == "http.response.body":
-                response.body = message.get("body", b"")
             await send(message)
 
         try:
