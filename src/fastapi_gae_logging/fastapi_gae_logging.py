@@ -310,6 +310,7 @@ class GAERequestLogger:
             builtin_parsers=builtin_payload_parsers,
             custom_parsers=custom_payload_parsers
         )
+        self._trace_parent = f"projects/{logger.project}/traces/"
 
     def _log_level_to_severity(self, log_level: int) -> str:
         """Converts Python logging levels to Cloud Logging severity strings."""
@@ -340,7 +341,7 @@ class GAERequestLogger:
         if not trace:
             return
 
-        trace_id = f"projects/{self.logger.project}/traces/{trace.split('/', 1)[0]}"
+        trace_id = f"{self._trace_parent}{trace.split('/', 1)[0]}"
         severity = self._log_level_to_severity(log_level=gae_request_context_data['max_log_level'])
 
         http_request = {
@@ -540,12 +541,11 @@ class FastAPIGAELoggingHandler(CloudLoggingHandler):
         """
         super().__init__(client, *args, **kwargs)
         self.app = app
-        self.project_id = client.project
         self.app.add_middleware(
             middleware_class=FastAPIGAELoggingMiddleware,
             logger=GAERequestLogger(
                 logger=self.client.logger(
-                    name=request_logger_name or f"{self.project_id}{self.REQUEST_LOGGER_SUFFIX}",
+                    name=request_logger_name or f"{self.client.project}{self.REQUEST_LOGGER_SUFFIX}",
                     resource=self.resource
                 ),
                 resource=self.resource,
@@ -555,4 +555,4 @@ class FastAPIGAELoggingHandler(CloudLoggingHandler):
                 custom_payload_parsers=custom_payload_parsers
             )
         )
-        self.addFilter(LogInterceptor(project_id=self.project_id))
+        self.addFilter(LogInterceptor(project_id=self.client.project))
