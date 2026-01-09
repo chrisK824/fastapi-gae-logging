@@ -18,6 +18,8 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+GCLOUD_LOG_MAX_BYTE_SIZE = 1024 * 246
+
 GAE_REQUEST_CONTEXT: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
     'GAE_REQUEST_CONTEXT',
     default=None
@@ -108,11 +110,10 @@ class GaeLogSizeLimitFilter(logging.Filter):
         Returns:
             bool: True if safe to log, False if dropped (and printed to stdout).
         """
-        gcloud_log_max_bytes = 1024 * 246
         record_size = get_real_size(record.msg)
-        if record_size > gcloud_log_max_bytes:
+        if record_size > GCLOUD_LOG_MAX_BYTE_SIZE:
             logging.warning(f"Log entry with size {bytes_repr(record_size)} exceeds maximum size "
-                            f"of {bytes_repr(gcloud_log_max_bytes)}."
+                            f"of {bytes_repr(GCLOUD_LOG_MAX_BYTE_SIZE)}."
                             f"Dropping logging record originated from: {record.filename}:{record.lineno}. "
                             f"Using print instead, check stdout/stderr for print with timestamp: "
                             f"{datetime.fromtimestamp(record.created).isoformat()}")
@@ -357,6 +358,18 @@ class GAERequestLogger:
         """
         return self.LOG_LEVEL_TO_SEVERITY.get(log_level, self.LOG_LEVEL_TO_SEVERITY[logging.NOTSET])
 
+    @staticmethod
+    def _truncate_log_on_cap(log_payload, trace_id):
+        logging_payload_size = get_real_size(log_payload)
+        if logging_payload_size > GCLOUD_LOG_MAX_BYTE_SIZE:
+            print(f"Request payload that was skipped in parent log with trace_id {trace_id}: {log_payload}")
+            log_payload = (f"Request logging payload with size {bytes_repr(logging_payload_size)} "
+                           f"exceeds maximum size of {bytes_repr(GCLOUD_LOG_MAX_BYTE_SIZE)}, "
+                           f"truncating request body payload from log and using print instead."
+                           f"Check stdout/stderr for print with trace_id {trace_id}.")
+
+        return log_payload
+
     async def emit_request_log(self, request: Request, response: Response) -> None:
         """
         Log structured data after handling the request and right before returning a response.
@@ -373,6 +386,7 @@ class GAERequestLogger:
         if not trace:
             return
 
+        trace_id = f"projects/{self.logger.project}/traces/{trace.split('/', 1)[0]}"
         severity = self._log_level_to_severity(log_level=gae_request_context_data['max_log_level'])
 
         http_request = {
@@ -404,12 +418,12 @@ class GAERequestLogger:
                                        f"content type {content_type} failed: {e} | {traceback.format_exc()}")
 
             if request_payload:
-                logging_payload['request_payload'] = request_payload
+                logging_payload['request_payload'] = self._truncate_log_on_cap(request_payload, trace_id)
 
         self.logger.log_struct(
             info=logging_payload,
             resource=self.resource,
-            trace=f"projects/{self.logger.project}/traces/{trace.split('/', 1)[0]}",
+            trace=trace_id,
             http_request=http_request,
             severity=severity
         )
@@ -468,21 +482,69 @@ class FastAPIGAELoggingMiddleware:
             'max_log_level': logging.NOTSET
         })
 
-        _receive_cache = await receive()
+        # check if we need to log the request payload
+        method = scope.get("method", "GET")
+        should_cache_body = (
+                self.logger.log_payload
+                and method in {'POST', 'PUT', 'PATCH', 'DELETE'}
+        )
 
-        async def receive_cache():
-            return _receive_cache
+        # if we need to log the request payload, then patch
+        # the ASGI receive channel to cache it, so that next consumers
+        # can access it normally after our intervention
 
-        request = Request(scope, receive=receive_cache)
+        if should_cache_body:
+            chunks = []
+            more_body = True
+
+            # Consume the stream
+            while more_body:
+                chunk = await receive()
+                # Safety Check: Handle client disconnects during upload
+                # If client disconnects, we just forward that message immediately
+                # and stop trying to buffer.
+                if chunk["type"] == "http.disconnect":
+                    async def disconnect_receive(chunk_local=chunk):
+                        return chunk_local
+                    patched_receive = disconnect_receive
+                    break
+                # Standard payload chunk handling
+                chunks.append(chunk.get("body", b""))
+                more_body = chunk.get("more_body", False)
+            else:
+                # We reached more_body=False safely and while loop did not break.
+                # Stream consumed successfully.
+                body = b"".join(chunks)
+
+                # Create a closure that replays the full body as a single message.
+                # When next consumers call it (FastAPI/Starllette handlers),
+                # they re-consume the full body instantly from the cached closure
+
+                async def receive_cache(body_local=body):
+                    return {
+                        "type": "http.request",
+                        "body": body_local,
+                        "more_body": False
+                    }
+                patched_receive = receive_cache
+        else:
+            # If payload log is disabled, leave the original receive channel intact
+            patched_receive = receive
+
+        request = Request(scope, receive=patched_receive)
+        # mock response object to pass into logger.emit_request_log
+        # after the response from app is over
         response = Response(status_code=500)
 
+        # spoof response from server to copy the status code
+        # and inject it into the mock response closure initiated
         async def send_spoof_wrapper(message: Dict[str, Any]) -> None:
             if message["type"] == "http.response.start":
                 response.status_code = message["status"]
             await send(message)
 
         try:
-            await self.app(scope, receive_cache, send_spoof_wrapper)
+            await self.app(scope, patched_receive, send_spoof_wrapper)
         except Exception as e:
             if not isinstance(e, HTTPException):
                 logging.exception(e)

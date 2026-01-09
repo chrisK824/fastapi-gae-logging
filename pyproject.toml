@@ -33,8 +33,9 @@ Homepage = "https://github.com/chrisK824/fastapi-gae-logging"
 dev = [
     "fastapi>=0.128.0",
     "httpx>=0.28.1",
-    "isort>=6.1.0",
+    "python-multipart>=0.0.20",
     "ruff>=0.14.10",
+    "uvicorn>=0.39.0",
 ]
 
 [tool.ruff]
