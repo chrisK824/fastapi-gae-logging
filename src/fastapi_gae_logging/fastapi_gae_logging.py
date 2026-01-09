@@ -16,7 +16,7 @@ from starlette.datastructures import FormData
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import Response
-from starlette.types import ASGIApp, Receive, Scope, Send, Message
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 AsyncPayloadParser = Callable[[Request], Awaitable[Any]]
 
