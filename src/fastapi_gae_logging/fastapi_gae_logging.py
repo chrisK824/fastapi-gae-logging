@@ -541,6 +541,7 @@ class FastAPIGAELoggingHandler(CloudLoggingHandler):
         """
         super().__init__(client, *args, **kwargs)
         self.app = app
+        self._log_interceptor = LogInterceptor(project_id=client.project)
         self.app.add_middleware(
             middleware_class=FastAPIGAELoggingMiddleware,
             logger=GAERequestLogger(
@@ -555,4 +556,36 @@ class FastAPIGAELoggingHandler(CloudLoggingHandler):
                 custom_payload_parsers=custom_payload_parsers
             )
         )
-        self.addFilter(LogInterceptor(project_id=self.client.project))
+        self.addFilter(self._log_interceptor)
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """
+        Custom filter logic that ensures user-added filters are respected
+        before applying the internal LogInterceptor for severity propagation.
+
+        This ensures that if a log is dropped by another filter (e.g. noise suppression),
+        it does not affect the final request log severity.
+        """
+
+        for f in self.filters:
+
+            if f is self._log_interceptor:
+                continue
+
+            if hasattr(f, 'filter'):
+                result = f.filter(record)
+            else:
+                result = f(record)
+
+            if not result:
+                return False
+
+            if isinstance(result, logging.LogRecord):
+                record = result
+
+        result = self._log_interceptor.filter(record)
+
+        if not result:
+            return False
+
+        return True
