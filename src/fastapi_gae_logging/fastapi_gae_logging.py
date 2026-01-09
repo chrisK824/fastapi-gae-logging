@@ -6,7 +6,7 @@ import time
 import traceback
 from datetime import datetime
 from enum import Enum
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 
 from google.cloud.logging import Client
 from google.cloud.logging_v2 import Logger, Resource
@@ -16,7 +16,7 @@ from starlette.datastructures import FormData
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import Response
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Receive, Scope, Send, Message
 
 AsyncPayloadParser = Callable[[Request], Awaitable[Any]]
 
@@ -49,7 +49,7 @@ def get_gae_context() -> Dict[str, Any]:
     return ctx
 
 
-def bytes_repr(num, suffix='B'):
+def bytes_repr(num: float, suffix: str = 'B') -> str:
     """Converts a byte count into a human-readable string.
 
     Args:
@@ -66,7 +66,7 @@ def bytes_repr(num, suffix='B'):
     return f"{num:.1f}Yi{suffix}"
 
 
-def get_real_size(obj, seen=None):
+def get_real_size(obj: Any, seen: Optional[Set[int]] = None) -> int:
     """Recursively calculates the deep memory footprint of an object.
 
     Args:
@@ -317,7 +317,7 @@ class GAERequestLogger:
         return self.LOG_LEVEL_TO_SEVERITY.get(log_level, self.LOG_LEVEL_TO_SEVERITY[logging.NOTSET])
 
     @staticmethod
-    def _truncate_log_on_cap(log_payload, trace_id):
+    def _truncate_log_on_cap(log_payload: Any, trace_id: str) -> Any:
         """Truncates payload if it exceeds the GAE size limit to prevent crash."""
         logging_payload_size = get_real_size(log_payload)
         if logging_payload_size > GCLOUD_LOG_MAX_BYTE_SIZE:
@@ -447,7 +447,7 @@ class FastAPIGAELoggingMiddleware:
         # can access it normally after our intervention
 
         if should_cache_body:
-            chunks = []
+            chunks: List[bytes] = []
             more_body = True
 
             # Consume the stream
@@ -457,7 +457,7 @@ class FastAPIGAELoggingMiddleware:
                 # If client disconnects, we just forward that message immediately
                 # and stop trying to buffer.
                 if chunk["type"] == "http.disconnect":
-                    async def disconnect_receive(chunk_local=chunk):
+                    async def disconnect_receive(chunk_local: Message = chunk) -> Message:
                         return chunk_local
                     patched_receive = disconnect_receive
                     break
@@ -473,7 +473,7 @@ class FastAPIGAELoggingMiddleware:
                 # When next consumers call it (FastAPI/Starllette handlers),
                 # they re-consume the full body instantly from the cached closure
 
-                async def receive_cache(body_local=body):
+                async def receive_cache(body_local: bytes = body) -> Message:
                     return {
                         "type": "http.request",
                         "body": body_local,
