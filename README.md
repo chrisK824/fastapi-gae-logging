@@ -30,11 +30,16 @@ The `fastapi-gae-logging` module addresses these problems by:
 - **Request Logs Grouping**: Groups logs from the same request lifecycle to simplify log analysis using Google Cloud Log Explorer. The logger name for grouping can be customized and defaults to the Google Cloud Project ID with '-request-logger' as a suffix.
 - **Request Maximum Log Level Propagation**: Propagates the maximum log level throughout the request lifecycle, making it easier to search logs based on the severity of an issue.
 - **Optional incoming request logging**: Opt in/out to log headers and payload of incoming requests into the `jsonPayload` field of the parent log.
-- **Optional request headers logging**: Defaults to True. Headers dict lands into field `request_headers` in the `jsonPayload` of parent log.
-- **Request Payload Logging**: Defaults to True. Incoming payload parsed lands into field `request_payload` in the `jsonPayload` of parent log. Parsing is based on content type with capability to override. Currenty embedded parsers for:
+- **Optional request headers logging**: Defaults to False. Headers dict lands into field `request_headers` in the `jsonPayload` of parent log.
+- **Optional request Payload Logging**: Defaults to False. Incoming payload parsed lands into field `request_payload` in the `jsonPayload` of parent log. Parsing is based on content type with capability to override. Currenty embedded parsers for:
     - `application/json`
     - `application/x-www-form-urlencoded`
+    - `multipart/form-data`
     - `text/plain`
+- **Optional add-on log filters**: 
+    - `GaeLogSizeLimitFilter` filter to drop log records if they exceed the maximum allowed size by google cloud logging.
+    - `GaeUrlib3FullPoolFilter` filter to drop noisy 'Connection pool is full' warning logs
+    from Google Cloud and App Engine internal libraries.
 
 ## API
 
@@ -43,26 +48,25 @@ The `fastapi-gae-logging` module addresses these problems by:
 ```python
 FastAPIGAELoggingHandler(
     app: Starlette,
+    client: google.cloud.logging.Client,
     request_logger_name: Optional[str] = None,
-    log_payload: bool = True,
-    log_headers: bool = True,
-    custom_payload_parsers: Dict[str, Callable] = None,
+    log_payload: bool = False,
+    log_headers: bool = False,
+    builtin_payload_parsers: Optional[List[PayloadParser.Defaults]] = None,
+    custom_payload_parsers: Optional[Dict[str, Callable[[Request], Awaitable[Any]]]] = None,
     *args, **kwargs
 )
 ```
 
 - Parameters
     - **app** (FastAPI | Starlette): The FastAPI or Starlette application instance.
-    - **request_logger_name** (Optional[str], optional): The name of the Cloud Logging logger to use for request logs.
-                                                    Defaults to the Google Cloud Project ID with the suffix '-request-logger'.
-
-    - **log_payload** (bool, optional): Whether to log the request payload. If True, the payload for POST, PUT, PATCH, and DELETE requests will be logged. Defaults to True.
-
-    - **log_headers** (bool, optional): Whether to log the request headers. Defaults to True.
-    - **custom_payload_parsers**  (Dict[str, Callable], optional): A dictionary mapping content types to custom parser functions for logging request payloads. If provided, these will override default parsers. Defaults to None.
-
+    - **client** (google.cloud.logging.Client): The Google Cloud Logging Client instance. This is required to initialize the handler and retrieve the project ID.
+    - **request_logger_name** (Optional[str]): The name of the Cloud Logging logger to use for request logs. Defaults to the Google Cloud Project ID with the suffix '-request-logger'.
+    - **log_payload** (bool): Whether to log the request payload. If True, the payload for POST, PUT, PATCH, and DELETE requests will be captured and logged. Defaults to False.
+    - **log_headers** (bool): Whether to log the request headers. Defaults to False.
+    - **builtin_payload_parsers** (Optional[List[PayloadParser.Defaults]]): A list of built-in parser enums to enable (e.g., [PayloadParser.Defaults.JSON, PayloadParser.Defaults.FORM_URLENCODED]).
+    - **custom_payload_parsers** (Optional[Dict[str, Callable[[Request], Awaitable[Any]]]]): A dictionary mapping MIME types (e.g., 'application/custom+xml') to async parser coroutines. These coroutines must accept a Request object and return a serializable result to log. If provided, these will override default parsers for the specified content types.
     - ***args**: Additional arguments to pass to the superclass constructor. Any argument you would pass to CloudLoggingHandler.
-
     - ****kwargs**: Additional keyword arguments to pass to the superclass constructor. Any keyword argument you would pass to  CloudLoggingHandler.
 
 
