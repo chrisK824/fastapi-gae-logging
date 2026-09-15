@@ -7,7 +7,7 @@ packages = ["fastapi_gae_logging"]
 
 [project]
 name = "fastapi-gae-logging"
-version = "0.1.0"
+version = "0.2.0"
 description = "Custom Cloud Logging handler for FastAPI (or any Starlette based) applications deployed in Google App Engine. Groups logs coming from the same request lifecycle and propagates the maximum log level throughout the request lifecycle using middleware and context management."
 readme = "README.md"
 authors = [
