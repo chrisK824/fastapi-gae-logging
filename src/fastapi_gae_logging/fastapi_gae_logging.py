@@ -1,7 +1,6 @@
 import contextvars
 import functools
 import logging
-import re
 import sys
 import time
 import traceback
@@ -37,13 +36,14 @@ def get_gae_context() -> Dict[str, Any]:
     KeyErrors.
 
     Returns:
-        Dict[str, Any]: The context dictionary containing 'trace', 'start_time',
+        Dict[str, Any]: The context dictionary containing 'trace_id', 'span_id', 'start_time',
         and 'max_log_level'.
     """
     ctx = GAE_REQUEST_CONTEXT.get()
     if ctx is None:
         return {
-            'trace': None,
+            'trace_id': None,
+            'span_id': None,
             'start_time': time.time(),
             'max_log_level': logging.NOTSET
         }
@@ -213,13 +213,13 @@ class LogInterceptor(logging.Filter):
         if record.levelno > max_log_level:
             gae_request_context_data['max_log_level'] = record.levelno
 
-        trace = gae_request_context_data['trace']
+        trace_id = gae_request_context_data.get("trace_id")
+        span_id = gae_request_context_data.get("span_id")
 
-        if trace:
-            split_header = trace.split('/', 1)
-            record._trace = f"projects/{self.project_id}/traces/{split_header[0]}"
-            if len(split_header) > 1:
-                record._span_id = re.findall(r'^\w+', split_header[1])[0]
+        if trace_id:
+            record._trace = f"projects/{self.project_id}/traces/{trace_id}"
+            if span_id:
+                record._span_id = span_id
 
         return True
 
@@ -352,22 +352,22 @@ class GAERequestLogger:
             builtin_parsers=builtin_payload_parsers,
             custom_parsers=custom_payload_parsers
         )
-        self._trace_parent = f"projects/{logger.project}/traces/"
+        self._trace_prefix = f"projects/{logger.project}/traces/"
 
     def _log_level_to_severity(self, log_level: int) -> str:
         """Converts Python logging levels to Cloud Logging severity strings."""
         return self.LOG_LEVEL_TO_SEVERITY.get(log_level, self.LOG_LEVEL_TO_SEVERITY[logging.NOTSET])
 
     @staticmethod
-    def _truncate_log_on_cap(log_payload: Any, trace_id: str) -> Any:
+    def _truncate_log_on_cap(log_payload: Any, trace: str) -> Any:
         """Truncates payload if it exceeds the GAE size limit to prevent crash."""
         logging_payload_size = get_real_size(log_payload)
         if logging_payload_size > GCLOUD_LOG_MAX_BYTE_SIZE:
-            print(f"Request payload that was skipped in parent log with trace_id {trace_id}: {log_payload}")
+            print(f"Request payload that was skipped in parent log with trace {trace}: {log_payload}")
             log_payload = (f"Request logging payload with size {bytes_repr(logging_payload_size)} "
                            f"exceeds maximum size of {bytes_repr(GCLOUD_LOG_MAX_BYTE_SIZE)}, "
                            f"truncating request body payload from log and using print instead."
-                           f"Check stdout/stderr for print with trace_id {trace_id}.")
+                           f"Check stdout/stderr for print with trace {trace}.")
 
         return log_payload
 
@@ -378,12 +378,14 @@ class GAERequestLogger:
         latency, determines the final severity, and sends the log to GCP.
         """
         gae_request_context_data = get_gae_context()
-        trace = gae_request_context_data['trace']
 
-        if not trace:
+        trace_id = gae_request_context_data.get("trace_id")
+        span_id = gae_request_context_data.get("span_id")
+
+        if not trace_id:
             return
 
-        trace_id = f"{self._trace_parent}{trace.split('/', 1)[0]}"
+        trace = f"{self._trace_prefix}{trace_id}"
         severity = self._log_level_to_severity(log_level=gae_request_context_data['max_log_level'])
 
         http_request = {
@@ -415,12 +417,13 @@ class GAERequestLogger:
                                        f"content type {content_type} failed: {e} | {traceback.format_exc()}")
 
             if request_payload:
-                logging_payload['request_payload'] = self._truncate_log_on_cap(request_payload, trace_id)
+                logging_payload['request_payload'] = self._truncate_log_on_cap(request_payload, trace)
 
         self.logger.log_struct(
             info=logging_payload,
             resource=self.resource,
-            trace=trace_id,
+            trace=trace,
+            span_id=span_id,
             http_request=http_request,
             severity=severity
         )
@@ -468,11 +471,33 @@ class FastAPIGAELoggingMiddleware:
             await self.app(scope, receive, send)
             return
 
-        headers = dict(scope.get("headers", []))
-        trace_header = headers.get(b"x-cloud-trace-context", b"").decode("latin-1") or None
+        headers: Dict[bytes, bytes] = dict(scope.get("headers", []))
+
+        trace_id = None
+        span_id = None
+
+        # Modern standard trace header
+        traceparent_bytes = headers.get(b"traceparent", b"")
+        if traceparent_bytes:
+            traceparent = traceparent_bytes.decode("latin-1")
+            parts = traceparent.split("-")
+            if len(parts) >= 3 and parts[1] and parts[2]:
+                trace_id = parts[1]
+                span_id = parts[2]
+
+        # Legacy Google Cloud header
+        if not trace_id:
+            x_cloud_trace_bytes = headers.get(b"x-cloud-trace-context", b"")
+            if x_cloud_trace_bytes:
+                x_cloud_trace = x_cloud_trace_bytes.decode("latin-1")
+                parts = x_cloud_trace.split("/")
+                trace_id = parts[0]
+                if len(parts) > 1:
+                    span_id = parts[1].split(";")[0]
 
         GAE_REQUEST_CONTEXT.set({
-            'trace': trace_header,
+            'trace_id': trace_id,
+            'span_id': span_id,
             'start_time': time.time(),
             'max_log_level': logging.NOTSET
         })
