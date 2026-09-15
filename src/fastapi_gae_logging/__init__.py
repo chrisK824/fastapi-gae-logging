@@ -3,11 +3,13 @@ from .fastapi_gae_logging import (
     GaeLogSizeLimitFilter,
     GaeUrlib3FullPoolFilter,
     PayloadParser,
+    inject_gae_request_context,
 )
 
 __all__ = [
     "FastAPIGAELoggingHandler",
     "PayloadParser",
     "GaeLogSizeLimitFilter",
-    "GaeUrlib3FullPoolFilter"
+    "GaeUrlib3FullPoolFilter",
+    "inject_gae_request_context"
 ]

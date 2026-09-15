@@ -1,4 +1,5 @@
 import contextvars
+import functools
 import logging
 import re
 import sys
@@ -47,6 +48,47 @@ def get_gae_context() -> Dict[str, Any]:
             'max_log_level': logging.NOTSET
         }
     return ctx
+
+
+def inject_gae_request_context(func: Callable) -> Callable:
+    """
+    Captures the current thread's GAE logging context and wraps the target function
+    to ensure the context is injected when executed in a worker thread.
+
+    Use this utility when passing functions to thread pools (like `ThreadPoolExecutor`)
+    to ensure that logs generated inside the worker thread are correctly grouped under
+    the parent HTTP request trace in Google Cloud Logging. This safely propagates the
+    logging context without copying unrelated context variables (like database sessions),
+    preventing deadlocks.
+
+    Note:
+        Do not use this as a static `@decorator` on a function definition. Decorators
+        are evaluated at module import time (before the request exists), so the captured
+        context will be empty. Always apply it dynamically at execution time.
+
+    Example:
+        ```python
+        from concurrent.futures import ThreadPoolExecutor
+        from fastapi_gae_logging import inject_gae_request_context
+
+        def background_task(payload: dict):
+            logging.info(f"Processing {payload}") # This will be grouped correctly!
+
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            # Wrap the function exactly at submission time
+            pool.submit(inject_gae_request_context(background_task), {"user": 123})
+        ```
+    """
+    gae_ctx = GAE_REQUEST_CONTEXT.get()
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        if gae_ctx is not None:
+            GAE_REQUEST_CONTEXT.set(gae_ctx)
+
+        return func(*args, **kwargs)
+
+    return wrapper
 
 
 def bytes_repr(num: float, suffix: str = 'B') -> str:
