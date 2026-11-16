@@ -1,13 +1,14 @@
 import contextvars
 import functools
-import logging
-import sys
 import inspect
+import logging
+import re
+import sys
 import time
 import traceback
 from datetime import datetime
 from enum import Enum
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
+from typing import Any, Awaitable, Callable, Dict, List, NamedTuple, Optional, Set
 
 from google.cloud.logging import Client
 from google.cloud.logging_v2 import Logger, Resource
@@ -27,6 +28,77 @@ GAE_REQUEST_CONTEXT: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextv
     'GAE_REQUEST_CONTEXT',
     default=None
 )
+
+
+class TraceContext(NamedTuple):
+    """Trace information extracted from incoming request headers."""
+    trace_id: Optional[str] = None
+    span_id: Optional[str] = None
+    sampled: bool = False
+
+
+# Ported from google.cloud.logging_v2.handlers._helpers so behavior matches the official library.
+_VERSION_PART = r"(?!ff)[a-f\d]{2}"
+_TRACE_ID_PART = r"(?![0]{32})[a-f\d]{32}"
+_PARENT_ID_PART = r"(?![0]{16})[a-f\d]{16}"
+_FLAGS_PART = r"[a-f\d]{2}"
+_TRACEPARENT_RE = re.compile(
+    f"^\\s?({_VERSION_PART})-({_TRACE_ID_PART})-({_PARENT_ID_PART})-({_FLAGS_PART})(-.*)?\\s?$"
+)
+
+# "TRACE_ID[/SPAN_ID][;o=OPTIONS]"
+_XCLOUD_TRACE_RE = re.compile(r"([\w-]+)?(\/?([\w-]+))?(;?o=(\d))?")
+
+
+def parse_traceparent(header: Optional[str]) -> TraceContext:
+    """Parses a W3C `traceparent` header (https://www.w3.org/TR/trace-context/).
+
+    Returns an empty TraceContext if the header is missing or can't be parsed.
+    """
+    if not header:
+        return TraceContext()
+
+    match = _TRACEPARENT_RE.match(header)
+    if not match:
+        return TraceContext()
+
+    sampled = bool(int(match.group(4), 16) & 1)
+    return TraceContext(trace_id=match.group(2), span_id=match.group(3), sampled=sampled)
+
+
+def parse_xcloud_trace(header: Optional[str]) -> TraceContext:
+    """Parses a legacy `X-Cloud-Trace-Context` header.
+
+    The decimal span id is converted to the 16-char hex form Cloud Logging expects.
+    A span id that is not a number, is 0, or is >= 2**64 is dropped; the trace id is kept.
+    """
+    if not header:
+        return TraceContext()
+
+    match = _XCLOUD_TRACE_RE.match(header)
+    if not match:
+        return TraceContext()
+
+    trace_id = match.group(1)
+    span_id = match.group(3)
+    sampled = match.group(5) == "1"
+
+    try:
+        span_int = int(span_id)
+        span_id = f"{span_int:016x}" if 0 < span_int < 2 ** 64 else None
+    except (ValueError, TypeError):
+        span_id = None
+
+    return TraceContext(trace_id=trace_id, span_id=span_id, sampled=sampled)
+
+
+def extract_trace_context(headers: Dict[bytes, bytes]) -> TraceContext:
+    """Extracts trace info from ASGI headers: `traceparent` first, then the legacy header."""
+    ctx = parse_traceparent(headers.get(b"traceparent", b"").decode("latin-1"))
+    if ctx.trace_id:
+        return ctx
+
+    return parse_xcloud_trace(headers.get(b"x-cloud-trace-context", b"").decode("latin-1"))
 
 
 def get_gae_context() -> Dict[str, Any]:
@@ -505,35 +577,16 @@ class FastAPIGAELoggingMiddleware:
             return
 
         headers: Dict[bytes, bytes] = dict(scope.get("headers", []))
+        trace_ctx = extract_trace_context(headers)
 
-        trace_id = None
-        span_id = None
-
-        # Modern standard trace header
-        traceparent_bytes = headers.get(b"traceparent", b"")
-        if traceparent_bytes:
-            traceparent = traceparent_bytes.decode("latin-1")
-            parts = traceparent.split("-")
-            if len(parts) >= 3 and parts[1] and parts[2]:
-                trace_id = parts[1]
-                span_id = parts[2]
-
-        # Legacy Google Cloud header
-        if not trace_id:
-            x_cloud_trace_bytes = headers.get(b"x-cloud-trace-context", b"")
-            if x_cloud_trace_bytes:
-                x_cloud_trace = x_cloud_trace_bytes.decode("latin-1")
-                parts = x_cloud_trace.split("/")
-                trace_id = parts[0]
-                if len(parts) > 1:
-                    span_id = parts[1].split(";")[0]
-
-        GAE_REQUEST_CONTEXT.set({
-            'trace_id': trace_id,
-            'span_id': span_id,
-            'start_time': time.time(),
-            'max_log_level': logging.NOTSET
-        })
+        GAE_REQUEST_CONTEXT.set(
+            {
+                "trace_id": trace_ctx.trace_id,
+                "span_id": trace_ctx.span_id,
+                "start_time": time.time(),
+                "max_log_level": logging.NOTSET,
+            }
+        )
 
         # check if we need to log the request payload
         method = scope.get("method", "GET")
