@@ -2,6 +2,7 @@ import contextvars
 import functools
 import logging
 import sys
+import inspect
 import time
 import traceback
 from datetime import datetime
@@ -61,10 +62,34 @@ def inject_gae_request_context(func: Callable) -> Callable:
     logging context without copying unrelated context variables (like database sessions),
     preventing deadlocks.
 
+    The context is set for the duration of the call only and is reset afterwards, so
+    reused pool threads never leak one request's trace into a later, unrelated task.
+
     Note:
-        Do not use this as a static `@decorator` on a function definition. Decorators
-        are evaluated at module import time (before the request exists), so the captured
-        context will be empty. Always apply it dynamically at execution time.
+        - Do not use this as a static `@decorator` on a function definition. Decorators
+          are evaluated at module import time (before the request exists), so the captured
+          context will be empty. Always apply it dynamically at execution time.
+        - Only synchronous callables are supported. For an `async def` function the
+          context would be set only while the coroutine object is created, not while it
+          runs, so it would silently have no effect. Passing a coroutine function raises
+          `TypeError`.
+        - The request context is shared by reference, not copied. Log levels recorded
+          in worker threads therefore contribute to the severity of the parent request
+          log, as long as the task logs before the request has finished. Logs emitted
+          by tasks that outlive the request are still grouped under the trace, but can
+          no longer change the already-emitted request log severity.
+        - This is not needed for `starlette.concurrency.run_in_threadpool` or
+          `anyio.to_thread.run_sync`, which already copy the full context into the
+          worker thread. It is intended for raw `ThreadPoolExecutor` usage.
+
+    Args:
+        func (Callable): A synchronous callable to run in a worker thread.
+
+    Returns:
+        Callable: A wrapper that runs `func` with the captured GAE context active.
+
+    Raises:
+        TypeError: If `func` is a coroutine function.
 
     Example:
         ```python
@@ -79,14 +104,22 @@ def inject_gae_request_context(func: Callable) -> Callable:
             pool.submit(inject_gae_request_context(background_task), {"user": 123})
         ```
     """
+    if inspect.iscoroutinefunction(func):
+        raise TypeError(
+            "inject_gae_request_context only supports synchronous callables; "
+            f"got coroutine function {getattr(func, '__qualname__', func)!r}. "
+            "Async code already runs in the request's context."
+        )
+
     gae_ctx = GAE_REQUEST_CONTEXT.get()
 
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        if gae_ctx is not None:
-            GAE_REQUEST_CONTEXT.set(gae_ctx)
-
-        return func(*args, **kwargs)
+        token = GAE_REQUEST_CONTEXT.set(gae_ctx)
+        try:
+            return func(*args, **kwargs)
+        finally:
+            GAE_REQUEST_CONTEXT.reset(token)
 
     return wrapper
 
