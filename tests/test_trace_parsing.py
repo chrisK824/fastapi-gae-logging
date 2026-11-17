@@ -12,37 +12,37 @@ SPAN_HEX = "f9be92ed930ba3c3"
 
 
 @pytest.mark.parametrize("header,expected", [
-    (f"00-{TRACE}-{SPAN_HEX}-00", (TRACE, SPAN_HEX, False)),
-    (f"00-{TRACE}-{SPAN_HEX}-01", (TRACE, SPAN_HEX, True)),
-    (f" 00-{TRACE}-{SPAN_HEX}-01 ", (TRACE, SPAN_HEX, True)),
-    (f"01-{TRACE}-{SPAN_HEX}-01-extra", (TRACE, SPAN_HEX, True)),
-    (f"00-{TRACE}-{SPAN_HEX}-01-extra", (TRACE, SPAN_HEX, True)),
-    (f"ff-{TRACE}-{SPAN_HEX}-01", (None, None, False)),
-    (f"00-{'0' * 32}-{SPAN_HEX}-01", (None, None, False)),
-    (f"00-{TRACE}-{'0' * 16}-01", (None, None, False)),
-    (f"00-{TRACE.upper()}-{SPAN_HEX}-01", (None, None, False)),
-    (f"00-{TRACE[:-1]}-{SPAN_HEX}-01", (None, None, False)),
-    ("garbage", (None, None, False)),
-    ("", (None, None, False)),
-    (None, (None, None, False)),
+    (f"00-{TRACE}-{SPAN_HEX}-00", (TRACE, SPAN_HEX)),
+    (f"00-{TRACE}-{SPAN_HEX}-01", (TRACE, SPAN_HEX)),
+    (f" 00-{TRACE}-{SPAN_HEX}-01 ", (TRACE, SPAN_HEX)),
+    (f"01-{TRACE}-{SPAN_HEX}-01-extra", (TRACE, SPAN_HEX)),
+    (f"00-{TRACE}-{SPAN_HEX}-01-extra", (TRACE, SPAN_HEX)),
+    (f"ff-{TRACE}-{SPAN_HEX}-01", (None, None)),
+    (f"00-{'0' * 32}-{SPAN_HEX}-01", (None, None)),
+    (f"00-{TRACE}-{'0' * 16}-01", (None, None)),
+    (f"00-{TRACE.upper()}-{SPAN_HEX}-01", (None, None)),
+    (f"00-{TRACE[:-1]}-{SPAN_HEX}-01", (None, None)),
+    ("garbage", (None, None)),
+    ("", (None, None)),
+    (None, (None, None)),
 ])
 def test_parse_traceparent(header, expected):
     assert tuple(parse_traceparent(header)) == expected
 
 
 @pytest.mark.parametrize("header,expected", [
-    (f"{TRACE}/17995982710090998723;o=1", (TRACE, f"{17995982710090998723:016x}", True)),
-    (f"{TRACE}/17995982710090998723", (TRACE, f"{17995982710090998723:016x}", False)),
-    (f"{TRACE}/1;o=0", (TRACE, "0000000000000001", False)),
-    (f"{TRACE}/1;x=y;o=1", (TRACE, "0000000000000001", False)),  # official quirk
-    (f"{TRACE};o=1", (TRACE, None, True)),
-    (TRACE, (TRACE, None, False)),
-    (f"{TRACE}/0", (TRACE, None, False)),
-    (f"{TRACE}/{2 ** 64}", (TRACE, None, False)),
-    (f"{TRACE}/notanumber", (TRACE, None, False)),
-    (f"{TRACE}/-5", (TRACE, None, False)),
-    ("", (None, None, False)),
-    (None, (None, None, False)),
+    (f"{TRACE}/17995982710090998723;o=1", (TRACE, f"{17995982710090998723:016x}")),
+    (f"{TRACE}/17995982710090998723", (TRACE, f"{17995982710090998723:016x}")),
+    (f"{TRACE}/1;o=0", (TRACE, "0000000000000001")),
+    (f"{TRACE}/1;x=y;o=1", (TRACE, "0000000000000001")),  # official quirk
+    (f"{TRACE};o=1", (TRACE, None)),
+    (TRACE, (TRACE, None)),
+    (f"{TRACE}/0", (TRACE, None)),
+    (f"{TRACE}/{2 ** 64}", (TRACE, None)),
+    (f"{TRACE}/notanumber", (TRACE, None)),
+    (f"{TRACE}/-5", (TRACE, None)),
+    ("", (None, None)),
+    (None, (None, None)),
 ])
 def test_parse_xcloud_trace(header, expected):
     assert tuple(parse_xcloud_trace(header)) == expected

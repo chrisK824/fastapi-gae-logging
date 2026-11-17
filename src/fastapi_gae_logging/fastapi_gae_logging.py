@@ -34,7 +34,6 @@ class TraceContext(NamedTuple):
     """Trace information extracted from incoming request headers."""
     trace_id: Optional[str] = None
     span_id: Optional[str] = None
-    sampled: bool = False
 
 
 # Ported from google.cloud.logging_v2.handlers._helpers so behavior matches the official library.
@@ -62,8 +61,7 @@ def parse_traceparent(header: Optional[str]) -> TraceContext:
     if not match:
         return TraceContext()
 
-    sampled = bool(int(match.group(4), 16) & 1)
-    return TraceContext(trace_id=match.group(2), span_id=match.group(3), sampled=sampled)
+    return TraceContext(trace_id=match.group(2), span_id=match.group(3))
 
 
 def parse_xcloud_trace(header: Optional[str]) -> TraceContext:
@@ -81,7 +79,6 @@ def parse_xcloud_trace(header: Optional[str]) -> TraceContext:
 
     trace_id = match.group(1)
     span_id = match.group(3)
-    sampled = match.group(5) == "1"
 
     try:
         span_int = int(span_id)
@@ -89,7 +86,7 @@ def parse_xcloud_trace(header: Optional[str]) -> TraceContext:
     except (ValueError, TypeError):
         span_id = None
 
-    return TraceContext(trace_id=trace_id, span_id=span_id, sampled=sampled)
+    return TraceContext(trace_id=trace_id, span_id=span_id)
 
 
 def extract_trace_context(headers: Dict[bytes, bytes]) -> TraceContext:
