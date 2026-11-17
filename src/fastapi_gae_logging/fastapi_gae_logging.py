@@ -6,6 +6,7 @@ import re
 import sys
 import time
 import traceback
+import uuid
 from datetime import datetime
 from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, List, NamedTuple, Optional, Set
@@ -47,6 +48,10 @@ _TRACEPARENT_RE = re.compile(
 
 # "TRACE_ID[/SPAN_ID][;o=OPTIONS]"
 _XCLOUD_TRACE_RE = re.compile(r"([\w-]+)?(\/?([\w-]+))?(;?o=(\d))?")
+
+# custom labels
+_UPSTREAM_TRACE_ID_LABEL = "upstream_trace_id"
+_UPSTREAM_SPAN_ID_LABEL = "upstream_span_id"
 
 
 def parse_traceparent(header: Optional[str]) -> TraceContext:
@@ -106,7 +111,7 @@ def get_gae_context() -> Dict[str, Any]:
     KeyErrors.
 
     Returns:
-        Dict[str, Any]: The context dictionary containing 'trace_id', 'span_id', 'start_time',
+        Dict[str, Any]: The context dictionary containing 'trace_id', 'span_id', 'labels', 'start_time',
         and 'max_log_level'.
     """
     ctx = GAE_REQUEST_CONTEXT.get()
@@ -114,6 +119,7 @@ def get_gae_context() -> Dict[str, Any]:
         return {
             'trace_id': None,
             'span_id': None,
+            'labels': None,
             'start_time': time.time(),
             'max_log_level': logging.NOTSET
         }
@@ -292,7 +298,7 @@ class LogInterceptor(logging.Filter):
     This filter intercepts every log call during a request's lifecycle. It:
     1. Extracts the current trace ID from GAE_REQUEST_CONTEXT.
     2. Updates the max_log_level in the context (used to set parent log severity).
-    3. Injects _trace and _span_id into the record so CloudLoggingHandler
+    3. Injects _trace, _span_id and _labels (if populated) into the record so CloudLoggingHandler
        properly groups app logs under the request log.
     """
 
@@ -317,11 +323,16 @@ class LogInterceptor(logging.Filter):
 
         trace_id = gae_request_context_data.get("trace_id")
         span_id = gae_request_context_data.get("span_id")
+        labels = gae_request_context_data.get("labels")
 
         if trace_id:
             record._trace = f"projects/{self.project_id}/traces/{trace_id}"
-            if span_id:
-                record._span_id = span_id
+            record._span_id = span_id
+
+        if labels:
+            _labels = dict(getattr(record, "_labels", None) or {})
+            _labels.update(labels)
+            record._labels = _labels
 
         return True
 
@@ -483,6 +494,7 @@ class GAERequestLogger:
 
         trace_id = gae_request_context_data.get("trace_id")
         span_id = gae_request_context_data.get("span_id")
+        labels = gae_request_context_data.get("labels")
 
         if not trace_id:
             return
@@ -526,6 +538,7 @@ class GAERequestLogger:
             resource=self.resource,
             trace=trace,
             span_id=span_id,
+            labels=labels,
             http_request=http_request,
             severity=severity
         )
@@ -545,15 +558,17 @@ class FastAPIGAELoggingMiddleware:
         with large file uploads as this may lead to high memory consumption.
     """
 
-    def __init__(self, app: ASGIApp, logger: GAERequestLogger):
+    def __init__(self, app: ASGIApp, logger: GAERequestLogger, isolate_trace: bool = False):
         """Initialize the middleware.
 
         Args:
             app (ASGIApp): The ASGI application instance.
             logger (GAERequestLogger): The logger instance used to log request data.
+            isolate_trace (bool): Whether to use custom trace IDs to group logs under requests or not.
         """
         self.app = app
         self.logger = logger
+        self.isolate_trace = isolate_trace
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
         """
@@ -576,12 +591,28 @@ class FastAPIGAELoggingMiddleware:
         headers: Dict[bytes, bytes] = dict(scope.get("headers", []))
         trace_ctx = extract_trace_context(headers)
 
+        trace_id = trace_ctx.trace_id
+        span_id = trace_ctx.span_id
+        labels = {}
+
+        if self.isolate_trace:
+            # store upstream tracing in labels for anyone still needing them
+            if trace_id:
+                labels[_UPSTREAM_TRACE_ID_LABEL] = trace_id
+
+            if span_id:
+                labels[_UPSTREAM_SPAN_ID_LABEL] = span_id
+
+            trace_id = uuid.uuid4().hex
+            span_id = None
+
         GAE_REQUEST_CONTEXT.set(
             {
-                "trace_id": trace_ctx.trace_id,
-                "span_id": trace_ctx.span_id,
+                "trace_id": trace_id,
+                "span_id": span_id,
+                "labels": labels if labels else None,
                 "start_time": time.time(),
-                "max_log_level": logging.NOTSET,
+                "max_log_level": logging.NOTSET
             }
         )
 
@@ -651,7 +682,7 @@ class FastAPIGAELoggingMiddleware:
         except Exception as e:
             if not isinstance(e, HTTPException):
                 logging.exception(e)
-            raise e
+            raise
         finally:
             await self.logger.emit_request_log(request, response)
 
@@ -674,6 +705,7 @@ class FastAPIGAELoggingHandler(CloudLoggingHandler):
             log_headers: bool = False,
             builtin_payload_parsers: Optional[List[PayloadParser.Defaults]] = None,
             custom_payload_parsers: Optional[Dict[str, AsyncPayloadParser]] = None,
+            isolate_trace: bool = False,
             *args, **kwargs
     ) -> None:
         """
@@ -687,6 +719,7 @@ class FastAPIGAELoggingHandler(CloudLoggingHandler):
             log_headers: Whether to log request headers.
             builtin_payload_parsers: List of defaults to enable.
             custom_payload_parsers: Dictionary of custom parsers.
+            isolate_trace: Whether to use custom trace IDs to group logs under requests or not.
             *args, **kwargs: Arguments passed to CloudLoggingHandler.
         """
         super().__init__(client, *args, **kwargs)
@@ -704,7 +737,8 @@ class FastAPIGAELoggingHandler(CloudLoggingHandler):
                 log_headers=log_headers,
                 builtin_payload_parsers=builtin_payload_parsers,
                 custom_payload_parsers=custom_payload_parsers
-            )
+            ),
+            isolate_trace=isolate_trace
         )
         self.addFilter(self._log_interceptor)
 

@@ -40,7 +40,8 @@ if os.getenv('GAE_ENV', '').startswith('standard'):
         # Optional - override built in payload parsers or provide more; applicable only if log_payload is set True
         custom_payload_parsers={
             "text/plain": custom_payload_parser_plain_text
-        }
+        },
+        isolate_trace=True
     )
     setup_logging(handler=gae_log_handler)
     # Optional - add extra filters for the logger
