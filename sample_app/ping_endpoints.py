@@ -8,7 +8,6 @@ import httpx2
 
 from fastapi_gae_logging.fastapi_gae_logging import TraceContext, extract_trace_context
 
-
 ENDPOINTS = ["/info", "/warning", "/error", "/exception", "/http_exception"]
 
 
