@@ -1,0 +1,43 @@
+name: CI/CD
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  build:
+      name: Build Package
+      needs: [ci]
+      runs-on: ubuntu-latest
+      steps:
+        - uses: actions/checkout@v7
+        - name: Install uv
+          uses: astral-sh/setup-uv@v7
+          with:
+            enable-cache: true
+        - name: Build
+          run: uv build
+        - name: Store artifacts
+          uses: actions/upload-artifact@v7
+          with:
+            name: dist-artifacts
+            path: dist/
+
+  publish-to-pypi:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download all the dists
+        uses: actions/download-artifact@v8
+        with:
+          name: dist-artifacts
+          path: dist/
+      - name: Publish distribution 📦 to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

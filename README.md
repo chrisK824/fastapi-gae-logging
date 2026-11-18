@@ -1,4 +1,8 @@
 # fastapi-gae-logging
+[![CI](https://github.com/chrisK824/fastapi-gae-logging/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/chrisK824/fastapi-gae-logging/actions/workflows/ci.yml)
+[![Python Versions](https://img.shields.io/pypi/pyversions/fastapi-gae-logging.svg)](https://pypi.org/project/fastapi-gae-logging/)
+[![PyPI version](https://img.shields.io/pypi/v/fastapi-gae-logging.svg)](https://pypi.org/project/fastapi-gae-logging/)
+
 Custom Cloud Logging handler for FastAPI (or any Starlette based) applications deployed in Google App Engine to ease out logs analysis and monitoring through Google Cloud Log Explorer.
 
 ## What problem does this package solve? Why do we need this?
@@ -331,4 +335,4 @@ This tool is built upon the following packages:
 - Use `sample_app` folder for minimal Appengine app deployment of fastapi app that uses the local library src code via symlink.
     - If symlink is broken for any reason, create it again from inside the `sample_app` folder: `ln -s ../src/fastapi_gae_logging/ .`
     - Deploy the app: `gcloud app deploy  --version=v1 default.yaml --project=<PROJECT_ID> --account <ACCOUNT_EMAIL>`
-    - Ping the sample app to generate logs for various cases in log explorer: `python3.12 ping_endpoints.py --project <PROJECT_ID>`
+    - Ping the sample app to generate logs for various cases in log explorer: `python3.14 ping_endpoints.py --project <PROJECT_ID>`
