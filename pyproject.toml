@@ -2,32 +2,38 @@
 requires = ["uv_build>=0.9.17,<0.10.0"]
 build-backend = "uv_build"
 
-[tool.setuptools]
-packages = ["fastapi_gae_logging"]
-
 [project]
 name = "fastapi-gae-logging"
 version = "0.3.0"
 description = "Custom Cloud Logging handler for FastAPI (or any Starlette based) applications deployed in Google App Engine. Groups logs coming from the same request lifecycle and propagates the maximum log level throughout the request lifecycle using middleware and context management."
 readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { name = "Chris Karvouniaris", email = "christos.karvouniaris247@gmail.com" }
 ]
-license = { text = "MIT" }
-requires-python = ">=3.9"
-dependencies = [
-    "google-cloud-logging>=3.13.0",
-    "starlette>=0.49.3",
-]
-
+keywords = ["fastapi", "starlette", "google-cloud-logging", "app-engine", "gae", "logging", "trace"]
 classifiers = [
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Operating System :: OS Independent",
-    "License :: OSI Approved :: MIT License",
+    "Topic :: System :: Logging",
+    "Typing :: Typed",
+]
+dependencies = [
+    "google-cloud-logging>=3.16.0",
+    "starlette>=1.0.0",
 ]
 
 [project.urls]
 Homepage = "https://github.com/chrisK824/fastapi-gae-logging"
+Repository = "https://github.com/chrisK824/fastapi-gae-logging"
+Issues = "https://github.com/chrisK824/fastapi-gae-logging/issues"
 
 [dependency-groups]
 dev = [
@@ -42,7 +48,7 @@ dev = [
 
 [tool.ruff]
 line-length = 127
-target-version = "py38"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "C90"]
