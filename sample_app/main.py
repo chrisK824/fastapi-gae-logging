@@ -41,6 +41,7 @@ if os.getenv('GAE_ENV', '').startswith('standard'):
         custom_payload_parsers={
             "text/plain": custom_payload_parser_plain_text
         },
+        # Optional - give every request its own trace id, keeping the upstream one in labels; defaults to False
         isolate_trace=True
     )
     setup_logging(handler=gae_log_handler)

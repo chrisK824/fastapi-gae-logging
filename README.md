@@ -29,14 +29,16 @@ The `fastapi-gae-logging` module addresses these problems by:
 
 - **Request Logs Grouping**: Groups logs from the same request lifecycle to simplify log analysis using Google Cloud Log Explorer. The logger name for grouping can be customized and defaults to the Google Cloud Project ID with '-request-logger' as a suffix.
 - **Request Maximum Log Level Propagation**: Propagates the maximum log level throughout the request lifecycle, making it easier to search logs based on the severity of an issue.
-- **Optional incoming request logging**: Opt in/out to log headers and payload of incoming requests into the `jsonPayload` field of the parent log.
+- **Trace header support**: Reads the W3C `traceparent` header first and falls back to the legacy `X-Cloud-Trace-Context` header. Headers are validated, and a malformed `traceparent` falls back to the legacy header instead of losing the trace. The legacy decimal span ID is converted to the 16-character hex form Cloud Logging expects.
+- **Optional trace isolation**: Defaults to False. Gives every request its own trace ID, so requests that share an upstream trace ID no longer group together. The upstream trace and span are kept as labels. See [Grouping by trace and `isolate_trace`](#grouping-by-trace-and-isolate_trace).
+- **Thread pool support**: `inject_gae_request_context` carries the request context into raw `ThreadPoolExecutor` threads. See [Thread pools](#thread-pools).
 - **Optional request headers logging**: Defaults to False. Headers dict lands into field `request_headers` in the `jsonPayload` of parent log.
-- **Optional request Payload Logging**: Defaults to False. Incoming payload parsed lands into field `request_payload` in the `jsonPayload` of parent log. Parsing is based on content type with capability to override. Currenty embedded parsers for:
+- **Optional request payload logging**: Defaults to False. Incoming payload parsed lands into field `request_payload` in the `jsonPayload` of parent log. Parsing is based on content type with capability to override. Currently embedded parsers for:
     - `application/json`
     - `application/x-www-form-urlencoded`
     - `multipart/form-data`
     - `text/plain`
-- **Optional add-on log filters**: 
+- **Optional add-on log filters**:
     - `GaeLogSizeLimitFilter` filter to drop log records if they exceed the maximum allowed size by google cloud logging.
     - `GaeUrlib3FullPoolFilter` filter to drop noisy 'Connection pool is full' warning logs
     from Google Cloud and App Engine internal libraries.
@@ -54,6 +56,7 @@ FastAPIGAELoggingHandler(
     log_headers: bool = False,
     builtin_payload_parsers: Optional[List[PayloadParser.Defaults]] = None,
     custom_payload_parsers: Optional[Dict[str, Callable[[Request], Awaitable[Any]]]] = None,
+    isolate_trace: bool = False,
     *args, **kwargs
 )
 ```
@@ -66,10 +69,66 @@ FastAPIGAELoggingHandler(
     - **log_headers** (bool): Whether to log the request headers. Defaults to False.
     - **builtin_payload_parsers** (Optional[List[PayloadParser.Defaults]]): A list of built-in parser enums to enable (e.g., [PayloadParser.Defaults.JSON, PayloadParser.Defaults.FORM_URLENCODED]).
     - **custom_payload_parsers** (Optional[Dict[str, Callable[[Request], Awaitable[Any]]]]): A dictionary mapping MIME types (e.g., 'application/custom+xml') to async parser coroutines. These coroutines must accept a Request object and return a serializable result to log. If provided, these will override default parsers for the specified content types.
-    - ***args**: Additional arguments to pass to the superclass constructor. Any argument you would pass to CloudLoggingHandler.
+    - **isolate_trace** (bool): Whether to give every request its own trace ID instead of using the incoming one. The incoming trace and span are preserved as the labels `upstream_trace_id` and `upstream_span_id`. Defaults to False. See [Grouping by trace and `isolate_trace`](#grouping-by-trace-and-isolate_trace).
+    - ***args**: Additional arguments to pass to the superclass constructor. Any argument you would pass to CloudLoggingHandler. Since 0.3.0, `isolate_trace` sits before `*args`, so pass `CloudLoggingHandler` arguments by keyword.
     - ****kwargs**: Additional keyword arguments to pass to the superclass constructor. Any keyword argument you would pass to  CloudLoggingHandler.
 
+## Grouping by trace and `isolate_trace`
 
+Log Explorer groups entries by their `trace` field. By default this library uses the trace ID of the incoming request (`traceparent`, then `X-Cloud-Trace-Context`), so app logs group under the request log.
+
+A trace ID identifies a distributed transaction, not a single request. When an upstream caller reuses one trace ID for several calls to your service (APM agents typically use one trace ID per transaction), App Engine passes that trace ID on and all those requests share a trace. Log Explorer then shows the logs of every one of them under each request log.
+
+Set `isolate_trace=True` to avoid that:
+
+```python
+gae_log_handler = FastAPIGAELoggingHandler(app=app, client=client, isolate_trace=True)
+```
+
+With it enabled:
+
+- Every request gets a new random trace ID, used by both its app logs and its request log, so each request groups on its own.
+- The incoming trace and span are preserved as the labels `upstream_trace_id` and `upstream_span_id` on the app logs and the request log. To see everything that belongs to one upstream transaction:
+  ```
+  labels.upstream_trace_id="<incoming trace id>"
+  ```
+- Isolated requests carry no `spanId`, since the span belongs to the upstream trace.
+- The request log is also emitted for requests that arrive without trace headers. Without isolation those requests get no request log.
+
+Trade-offs to be aware of:
+
+- Isolated logs no longer link to the caller's trace or to Cloud Trace.
+- App Engine's own `request_log` entries keep the upstream trace, so they won't appear in the per-request group.
+
+## Thread pools
+
+The request context is stored in a `contextvars.ContextVar`. Starlette's `run_in_threadpool` and `anyio.to_thread.run_sync` (used by FastAPI for sync endpoints) copy the context into the worker thread, so no action is needed there. Threads of a raw `concurrent.futures.ThreadPoolExecutor` start with an empty context, so their logs would carry no trace. Wrap the function with `inject_gae_request_context` at submission time:
+
+```python
+import logging
+from concurrent.futures import ThreadPoolExecutor
+
+from fastapi_gae_logging import inject_gae_request_context
+
+
+def background_task(payload: dict):
+    logging.info(f"Processing {payload}")  # grouped under the request
+
+
+pool = ThreadPoolExecutor(max_workers=5)
+
+
+@app.post("/work")
+async def work():
+    pool.submit(inject_gae_request_context(background_task), {"user": 123})
+```
+
+Notes:
+
+- Wrap at submission time. Don't use it as a `@decorator` on a function definition, because that runs at import time, before any request exists.
+- Only synchronous callables are supported. Passing a coroutine function raises `TypeError`.
+- The context is set only while the function runs and is reset afterwards, so pooled threads never leak one request's trace into a later task.
+- The context is shared by reference. Log levels recorded in workers count toward the severity of the request log, as long as they are logged before the request finishes.
 ## Example of usage
 
 ```python
@@ -115,7 +174,9 @@ if os.getenv('GAE_ENV', '').startswith('standard'):
         # Optional - override built in payload parsers or provide more; applicable only if log_payload is set True
         custom_payload_parsers={
             "text/plain": custom_payload_parser_plain_text
-        }
+        },
+        # Optional - give every request its own trace id, keeping the upstream one in labels; defaults to False
+        isolate_trace=True,
     )
     setup_logging(handler=gae_log_handler)
     # Optional - add extra filters for the logger
@@ -257,7 +318,8 @@ This tool is built upon the following packages:
 
 ## Implementation Concept
 - **Middleware Integration**: A custom middleware integrates into FastAPI to intercept requests and log data after processing.The custom middleware is added to the FastAPI application during the initialization of the FastAPIGAELoggingHandler.
-- **Context Management**: Uses context variables to manage request-specific data and metadata such as request payload, Google Cloud trace ID, start time of the incoming request and the maximum log level observed during the request lifecycle.
+- **Trace Handling**: The middleware reads `traceparent` first and falls back to `X-Cloud-Trace-Context`, validating both. With `isolate_trace` enabled it replaces the trace with a new random one and moves the upstream trace and span into labels.
+- **Context Management**: Uses a context variable to manage request-specific state: trace ID, span ID, optional labels, start time of the incoming request and the maximum log level observed during the request lifecycle. `run_in_threadpool` and `anyio` copy it into worker threads. Raw threads need `inject_gae_request_context`.
 - **Log Interception**: A logging filter intercepts log records, injecting trace information and adjusting the maximum log level based on observed log severity.
 - **Cloud Logging**: Utilizes Google Cloud Logging to group logs by request and propagate the maximum log level, enhancing observability and troubleshooting.
 - **Structured Logging**: Parent log of the request-response lifecycle is structured and sent to Google Cloud Logging with additional context, such as the request method, URL, and user agent after the request has been processed and served.
@@ -265,7 +327,8 @@ This tool is built upon the following packages:
 
 ### Dev
 - `uv sync --all-packages`
+- Run the tests: `uv run pytest`
 - Use `sample_app` folder for minimal Appengine app deployment of fastapi app that uses the local library src code via symlink.
-    - If symlink is broken for any reason, create it again from inside the `dev` folder: `ln -s ../src/fastapi_gae_logging/ .`
+    - If symlink is broken for any reason, create it again from inside the `sample_app` folder: `ln -s ../src/fastapi_gae_logging/ .`
     - Deploy the app: `gcloud app deploy  --version=v1 default.yaml --project=<PROJECT_ID> --account <ACCOUNT_EMAIL>`
     - Ping the sample app to generate logs for various cases in log explorer: `python3.12 ping_endpoints.py --project <PROJECT_ID>`
